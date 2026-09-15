@@ -1,0 +1,1437 @@
+<!doctype html>
+<!-- DBShooter 前端原型(评审用,无任何真实后端调用)
+     · 顶栏「标注」:显示四类标记 —— API=后端接口 / WS=WebSocket / UI=纯前端 / 占位=一期不做
+     · 顶栏「主题」:暗色/亮色切换
+     · 正式实现的接口与存储以后端联调为准,详见 01-需求分析与技术选型.md 第 5/6 节 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DBShooter — 前端原型</title>
+<style>
+  :root{
+    --bg:#15171c; --panel:#1b1e25; --panel2:#20242d; --hover:#262b35; --active:#2b3140;
+    --border:#2a2e38; --border-soft:#22262e;
+    --text:#d6dae2; --text2:#8a91a0; --muted:#5d6472;
+    --accent:#4d9de0; --accent-dim:rgba(77,157,224,.13);
+    --green:#4caf7d; --amber:#d9a03f; --red:#e05b5b;
+    --c-mysql:#1495b5; --c-pg:#4a7fae; --c-sqlite:#7fa8cf; --c-redis:#d84a3a; --c-mongo:#46a24b;
+    --mono:'Cascadia Code','JetBrains Mono',Consolas,'Courier New',monospace;
+    --sans:-apple-system,'Segoe UI','Microsoft YaHei','PingFang SC',sans-serif;
+    --thumb:#333845; --thumb-h:#40465a;
+    --tk-k:#6aa9e9; --tk-s:#9ece8f; --tk-c:#59616e; --tk-n:#d9a03f; --tk-f:#b07fd9;
+  }
+  [data-theme="light"]{
+    --bg:#f2f4f7; --panel:#ffffff; --panel2:#eceff4; --hover:#e6eaf1; --active:#dbe2ee;
+    --border:#d6dbe3; --border-soft:#e4e8ef;
+    --text:#2b3038; --text2:#59616e; --muted:#959daa;
+    --accent:#2f7fd1; --accent-dim:rgba(47,127,209,.10);
+    --green:#2e9e68; --amber:#b57f1f; --red:#d04545;
+    --thumb:#c6ccd7; --thumb-h:#aab2c0;
+    --tk-k:#1f6fd1; --tk-s:#2e8b3d; --tk-c:#8a93a3; --tk-n:#b57f1f; --tk-f:#8b4fc9;
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  html,body{height:100%}
+  body{font:13px/1.5 var(--sans); color:var(--text); background:var(--bg); overflow:hidden;
+       -webkit-font-smoothing:antialiased}
+  body.dragging{user-select:none; cursor:col-resize}
+  body.dragging-h{user-select:none; cursor:row-resize}
+  button{font:inherit; color:inherit; background:none; border:0; cursor:pointer}
+  input,textarea{font:inherit; color:var(--text)}
+  ::-webkit-scrollbar{width:10px; height:10px}
+  ::-webkit-scrollbar-thumb{background:var(--thumb); border-radius:5px; border:2px solid var(--panel)}
+  ::-webkit-scrollbar-thumb:hover{background:var(--thumb-h)}
+  ::-webkit-scrollbar-corner{background:transparent}
+  :focus-visible{outline:1px solid var(--accent); outline-offset:-1px}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important; animation:none!important}}
+  .hidden{display:none!important}
+
+  #app{display:flex; flex-direction:column; height:100vh}
+
+  /* ── 顶栏 ─────────────────────────────── */
+  #topbar{height:44px; flex:none; display:flex; align-items:center; gap:8px; padding:0 12px;
+          background:var(--panel); border-bottom:1px solid var(--border)}
+  .logo{display:flex; align-items:center; gap:8px; margin-right:10px; font-weight:600; font-size:14px}
+  .logo b{color:var(--accent); font-weight:700}
+  .logo svg{display:block}
+  .tb-btn{display:flex; align-items:center; gap:6px; height:30px; padding:0 11px; border-radius:5px;
+          color:var(--text2); border:1px solid transparent; white-space:nowrap; transition:background .12s}
+  .tb-btn:hover{background:var(--hover); color:var(--text)}
+  .tb-btn.primary{background:var(--accent); color:#fff}
+  .tb-btn.primary:hover{background:#5eaaea}
+  .tb-btn.toggled{background:var(--accent-dim); color:var(--accent); border-color:rgba(77,157,224,.35)}
+  .tb-sep{width:1px; height:20px; background:var(--border); margin:0 4px}
+  .tb-right{margin-left:auto; display:flex; align-items:center; gap:6px}
+
+  /* ── 中部三栏 ─────────────────────────── */
+  #middle{flex:1; display:flex; min-height:0}
+  #sidebar{width:264px; flex:none; display:flex; flex-direction:column; background:var(--panel); min-width:0}
+  .side-head{display:flex; align-items:center; gap:6px; padding:10px 10px 6px}
+  .side-title{font-weight:600; font-size:12px; color:var(--text2); flex:1}
+  .icon-btn{width:24px; height:24px; display:grid; place-items:center; border-radius:4px; color:var(--text2)}
+  .icon-btn:hover{background:var(--hover); color:var(--text)}
+  .side-search{padding:0 10px 8px}
+  .side-search input{width:100%; height:28px; padding:0 9px; background:var(--bg); border:1px solid var(--border);
+                     border-radius:5px; font-size:12px; outline:none}
+  .side-search input:focus{border-color:var(--accent)}
+  #tree{flex:1; overflow:auto; padding:2px 6px 12px}
+  .tn{user-select:none}
+  .tn-row{display:flex; align-items:center; gap:5px; height:26px; padding-right:6px; border-radius:4px;
+          cursor:pointer; white-space:nowrap; overflow:hidden}
+  .tn-row:hover{background:var(--hover)}
+  .tn-row.sel{background:var(--accent-dim)}
+  .tn-arrow{width:16px; height:16px; flex:none; display:grid; place-items:center; color:var(--muted);
+            font-size:9px; transition:transform .12s}
+  .tn.open > .tn-row .tn-arrow{transform:rotate(90deg)}
+  .tn.leaf > .tn-row .tn-arrow{visibility:hidden}
+  .tn-ico{width:17px; height:17px; flex:none; display:grid; place-items:center; color:var(--text2)}
+  .tn-label{font-size:12.5px; overflow:hidden; text-overflow:ellipsis}
+  .tn-meta{margin-left:auto; font-size:11px; color:var(--muted); padding-left:8px}
+  .tn-children{display:none; padding-left:14px}
+  .tn.open > .tn-children{display:block}
+  .dbbadge{width:17px; height:17px; flex:none; border-radius:4px; display:grid; place-items:center;
+           font-size:8.5px; font-weight:700; color:#fff; font-family:var(--mono)}
+
+  .vsplit{width:5px; flex:none; cursor:col-resize; background:var(--bg); border-left:1px solid var(--border-soft)}
+  .vsplit:hover{border-left-color:var(--accent)}
+
+  /* ── 工作区 ───────────────────────────── */
+  #workspace{flex:1; display:flex; flex-direction:column; min-width:0; background:var(--bg)}
+  #tabbar{flex:none; display:flex; align-items:flex-end; background:var(--panel);
+          border-bottom:1px solid var(--border); overflow-x:auto; min-height:37px}
+  .tab{display:flex; align-items:center; gap:7px; height:36px; padding:0 8px 0 12px; flex:none;
+       color:var(--text2); border-right:1px solid var(--border-soft); cursor:pointer;
+       border-top:2px solid transparent; white-space:nowrap}
+  .tab:hover{color:var(--text)}
+  .tab.active{background:var(--bg); color:var(--text); border-top-color:var(--accent)}
+  .tab .tab-sub{font-size:11px; color:var(--muted)}
+  .tab .tab-close{width:18px; height:18px; display:grid; place-items:center; border-radius:3px;
+                  color:var(--muted); font-size:12px}
+  .tab .tab-close:hover{background:var(--hover); color:var(--text)}
+  #panes{flex:1; min-height:0; position:relative}
+  .pane{position:absolute; inset:0; display:flex; flex-direction:column; min-height:0}
+
+  /* SQL 工作台 */
+  .pane-toolbar{flex:none; display:flex; align-items:center; gap:6px; padding:6px 10px;
+                background:var(--panel); border-bottom:1px solid var(--border-soft)}
+  .pt-btn{display:flex; align-items:center; gap:6px; height:26px; padding:0 10px; border-radius:4px;
+          color:var(--text2); font-size:12px; border:1px solid var(--border)}
+  .pt-btn:hover{background:var(--hover); color:var(--text)}
+  .pt-btn.run{color:var(--green); border-color:rgba(76,175,125,.4)}
+  .pt-btn.run:hover{background:rgba(76,175,125,.12)}
+  .pt-conn{margin-left:auto; display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text2)}
+  .pt-conn select{background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:4px;
+                  height:26px; padding:0 6px; font-size:12px; outline:none}
+
+  .editor-wrap{flex:1; min-height:80px; display:flex; flex-direction:column; overflow:hidden}
+  .editor{flex:1; display:flex; min-height:0; background:var(--bg); position:relative}
+  .gutter{flex:none; width:46px; overflow:hidden; background:var(--panel);
+          border-right:1px solid var(--border-soft)}
+  .gutter-inner{padding:10px 8px 10px 0; text-align:right; font:13px/1.55 var(--mono);
+                color:var(--muted); white-space:pre; will-change:transform}
+  .code{position:relative; flex:1; min-width:0}
+  .code .hl, .code .input{position:absolute; inset:0; margin:0; padding:10px 12px;
+       font:13px/1.55 var(--mono); white-space:pre; tab-size:2; letter-spacing:0}
+  .code .hl{overflow:hidden; pointer-events:none; color:var(--text)}
+  .code .input{background:transparent; color:transparent; caret-color:var(--text);
+               border:0; outline:none; resize:none; overflow:auto; width:100%; height:100%}
+  .tk-k{color:var(--tk-k)} .tk-s{color:var(--tk-s)} .tk-c{color:var(--tk-c); font-style:italic}
+  .tk-n{color:var(--tk-n)} .tk-f{color:var(--tk-f)}
+
+  .hsplit{height:5px; flex:none; cursor:row-resize; background:var(--panel);
+          border-top:1px solid var(--border-soft)}
+  .hsplit:hover{border-top-color:var(--accent)}
+
+  .results{flex:none; height:280px; min-height:110px; display:flex; flex-direction:column;
+           background:var(--panel); overflow:hidden}
+  .result-tabs{flex:none; display:flex; align-items:center; gap:2px; padding:0 8px; height:32px;
+               border-bottom:1px solid var(--border-soft)}
+  .rt-tab{height:32px; padding:0 12px; display:flex; align-items:center; gap:6px; font-size:12px;
+          color:var(--text2); border-bottom:2px solid transparent; cursor:pointer}
+  .rt-tab.active{color:var(--text); border-bottom-color:var(--accent)}
+  .rt-badge{font-size:10px; background:var(--hover); border-radius:8px; padding:0 6px; color:var(--text2)}
+  .result-status{margin-left:auto; font-size:11.5px; color:var(--muted); font-family:var(--mono)}
+  .result-body{flex:1; min-height:0; overflow:auto; position:relative}
+  .result-placeholder{position:absolute; inset:0; display:grid; place-items:center; color:var(--muted);
+                      font-size:12.5px}
+
+  table.grid{border-collapse:collapse; font:12px/1.5 var(--mono); min-width:100%}
+  table.grid th{position:sticky; top:0; background:var(--panel2); color:var(--text2); font-weight:500;
+                text-align:left; padding:6px 12px; border-bottom:1px solid var(--border);
+                border-right:1px solid var(--border-soft); white-space:nowrap; z-index:1}
+  table.grid th .col-type{color:var(--muted); font-size:10.5px; margin-left:6px}
+  table.grid td{padding:5px 12px; border-bottom:1px solid var(--border-soft);
+                border-right:1px solid var(--border-soft); white-space:nowrap; color:var(--text)}
+  table.grid tr:hover td{background:var(--hover)}
+  table.grid td.rn{color:var(--muted); background:var(--panel); text-align:right; user-select:none}
+  .null{color:var(--muted); font-style:italic}
+  pre.plan{padding:14px 16px; font:12px/1.6 var(--mono); color:var(--text2)}
+  pre.log{padding:14px 16px; font:12px/1.7 var(--mono); color:var(--text2)}
+  pre.log .ok{color:var(--green)} pre.log .err{color:var(--red)}
+
+  /* Redis 工作台 */
+  .redis-body{flex:1; display:flex; min-height:0}
+  .rkey-list{width:300px; flex:none; border-right:1px solid var(--border); display:flex; flex-direction:column; min-height:0}
+  .rkey-filter{padding:8px 10px; border-bottom:1px solid var(--border-soft)}
+  .rkey-filter input{width:100%; height:28px; padding:0 9px; background:var(--bg);
+                     border:1px solid var(--border); border-radius:5px; font-size:12px; outline:none}
+  .rkeys{flex:1; overflow:auto; padding:4px 6px}
+  .rkey{display:flex; align-items:center; gap:7px; height:28px; padding:0 8px; border-radius:4px;
+        cursor:pointer; font:12px/1 var(--mono)}
+  .rkey:hover{background:var(--hover)}
+  .rkey.sel{background:var(--accent-dim)}
+  .rkey .kt{width:16px; height:16px; border-radius:3px; display:grid; place-items:center;
+            font-size:9px; font-weight:700; color:#fff; flex:none}
+  .rkey .kn{flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .rkey .kttl{font-size:10.5px; color:var(--muted)}
+  .rval{flex:1; min-width:0; display:flex; flex-direction:column; min-height:0}
+  .rval-head{flex:none; padding:10px 14px; border-bottom:1px solid var(--border-soft);
+             display:flex; align-items:center; gap:10px; font-family:var(--mono); font-size:12.5px}
+  .rval-head .meta{font-size:11.5px; color:var(--muted)}
+  .rval-body{flex:1; overflow:auto; padding:12px 14px}
+
+  /* Mongo 工作台 */
+  .mongo-body{flex:1; display:flex; flex-direction:column; min-height:0}
+  .mongo-editor{flex:none; height:190px; border-bottom:1px solid var(--border)}
+  .mdocs{flex:1; overflow:auto; padding:12px 14px; display:flex; flex-direction:column; gap:10px}
+  .mdoc{background:var(--panel); border:1px solid var(--border); border-radius:6px; overflow:hidden}
+  .mdoc-head{display:flex; align-items:center; gap:8px; padding:6px 12px; font:11.5px/1 var(--mono);
+             color:var(--muted); border-bottom:1px solid var(--border-soft); background:var(--panel2)}
+  .mdoc pre{padding:10px 12px; font:12px/1.6 var(--mono); overflow:auto}
+
+  /* AI 面板 */
+  #aipanel{width:360px; flex:none; display:flex; flex-direction:column; background:var(--panel); min-width:0}
+  .ai-head{flex:none; display:flex; align-items:center; gap:8px; padding:11px 14px;
+           border-bottom:1px solid var(--border); font-weight:600}
+  .ai-head .prov{margin-left:auto; font-size:11px; font-weight:400; color:var(--muted);
+                 border:1px solid var(--border); border-radius:10px; padding:2px 8px}
+  .ai-ctx{flex:none; padding:8px 14px; border-bottom:1px solid var(--border-soft);
+          display:flex; flex-wrap:wrap; gap:6px; align-items:center}
+  .ai-ctx .lbl{font-size:11.5px; color:var(--muted)}
+  .chip{display:inline-flex; align-items:center; gap:5px; height:22px; padding:0 8px; border-radius:11px;
+        background:var(--accent-dim); color:var(--accent); font:11.5px/1 var(--mono)}
+  .chip i{cursor:pointer; font-style:normal; opacity:.7}
+  .chip.add{background:transparent; border:1px dashed var(--border); color:var(--text2); cursor:pointer}
+  #ai-msgs{flex:1; overflow:auto; padding:14px; display:flex; flex-direction:column; gap:12px}
+  .msg{max-width:92%; font-size:12.5px; line-height:1.6}
+  .msg.user{align-self:flex-end; background:var(--active); border-radius:10px 10px 2px 10px; padding:8px 12px}
+  .msg.bot{align-self:flex-start; width:100%}
+  .msg.bot .who{font-size:11px; color:var(--muted); margin-bottom:4px; display:flex; gap:6px; align-items:center}
+  .msg.bot p{color:var(--text2); margin-bottom:8px}
+  .sql-block{border:1px solid var(--border); border-radius:6px; overflow:hidden; background:var(--bg)}
+  .sql-block pre{padding:10px 12px; font:12px/1.6 var(--mono); overflow:auto; min-height:20px}
+  .sql-actions{display:flex; gap:6px; padding:6px 8px; border-top:1px solid var(--border-soft); background:var(--panel2)}
+  .sql-actions button{height:24px; padding:0 9px; font-size:11.5px; border-radius:4px;
+                      border:1px solid var(--border); color:var(--text2)}
+  .sql-actions button:hover{background:var(--hover); color:var(--text)}
+  .sql-actions .b-run{color:var(--green); border-color:rgba(76,175,125,.4)}
+  .ai-suggests{display:flex; flex-direction:column; gap:6px}
+  .ai-suggests button{text-align:left; padding:8px 12px; border:1px solid var(--border); border-radius:8px;
+                      color:var(--text2); font-size:12px; transition:border-color .12s}
+  .ai-suggests button:hover{border-color:var(--accent); color:var(--text)}
+  .ai-input{flex:none; padding:10px 12px; border-top:1px solid var(--border)}
+  .ai-input .box{display:flex; align-items:flex-end; gap:8px; background:var(--bg);
+                 border:1px solid var(--border); border-radius:8px; padding:8px 10px}
+  .ai-input textarea{flex:1; background:none; border:0; outline:none; resize:none; height:38px;
+                     font-size:12.5px; line-height:1.5}
+  .ai-send{width:30px; height:30px; flex:none; border-radius:6px; background:var(--accent); color:#fff;
+           display:grid; place-items:center}
+  .ai-send:hover{background:#5eaaea}
+
+  /* 状态栏 */
+  #statusbar{height:26px; flex:none; display:flex; align-items:center; gap:14px; padding:0 12px;
+             background:var(--panel); border-top:1px solid var(--border);
+             font-size:11.5px; color:var(--text2); font-family:var(--mono)}
+  #statusbar .dot{width:7px; height:7px; border-radius:50%; background:var(--green); display:inline-block}
+  #statusbar .sp{flex:1}
+
+  /* 弹窗 */
+  #modal-mask{position:fixed; inset:0; background:rgba(8,10,14,.6); display:grid; place-items:center; z-index:50}
+  .modal{width:620px; max-width:92vw; background:var(--panel); border:1px solid var(--border);
+         border-radius:10px; overflow:hidden; box-shadow:0 18px 60px rgba(0,0,0,.5)}
+  .modal-head{display:flex; align-items:center; padding:14px 18px; border-bottom:1px solid var(--border);
+              font-weight:600}
+  .modal-head .icon-btn{margin-left:auto}
+  .modal-body{padding:16px 18px}
+  .db-cards{display:grid; grid-template-columns:repeat(5,1fr); gap:8px; margin-bottom:16px}
+  .db-card{border:1px solid var(--border); border-radius:8px; padding:10px 6px; text-align:center;
+           cursor:pointer; color:var(--text2); font-size:12px; display:flex; flex-direction:column;
+           align-items:center; gap:7px}
+  .db-card:hover{background:var(--hover)}
+  .db-card.sel{border-color:var(--accent); background:var(--accent-dim); color:var(--text)}
+  .db-card .dbbadge{width:26px; height:26px; font-size:11px; border-radius:6px}
+  .form-grid{display:grid; grid-template-columns:1fr 1fr; gap:10px 14px}
+  .form-grid .full{grid-column:1/-1}
+  .field label{display:block; font-size:11.5px; color:var(--text2); margin-bottom:4px}
+  .field input{width:100%; height:30px; padding:0 9px; background:var(--bg);
+               border:1px solid var(--border); border-radius:5px; font-size:12.5px; outline:none}
+  .field input:focus{border-color:var(--accent)}
+  .modal-foot{display:flex; align-items:center; gap:8px; padding:13px 18px; border-top:1px solid var(--border)}
+  .test-msg{font-size:12px; font-family:var(--mono)}
+  .test-msg.ok{color:var(--green)} .test-msg.err{color:var(--red)}
+  .btn{height:30px; padding:0 14px; border-radius:5px; border:1px solid var(--border); color:var(--text2)}
+  .btn:hover{background:var(--hover); color:var(--text)}
+  .btn.primary{background:var(--accent); border-color:transparent; color:#fff}
+  .btn.primary:hover{background:#5eaaea}
+  .modal-foot .sp{flex:1}
+
+  /* Toast */
+  #toasts{position:fixed; right:16px; bottom:40px; display:flex; flex-direction:column; gap:8px; z-index:99}
+  .toast{background:var(--panel2); border:1px solid var(--border); border-left:3px solid var(--accent);
+         border-radius:6px; padding:9px 14px; font-size:12.5px; color:var(--text);
+         box-shadow:0 8px 24px rgba(0,0,0,.4); animation:tin .18s ease-out}
+  .toast.ok{border-left-color:var(--green)}
+  @keyframes tin{from{transform:translateY(6px); opacity:0} to{transform:none; opacity:1}}
+
+  /* 空状态 */
+  #empty-pane{position:absolute; inset:0; display:grid; place-items:center; color:var(--muted)}
+  #empty-pane .box{text-align:center; max-width:340px}
+  #empty-pane h2{font-size:15px; font-weight:500; color:var(--text2); margin:14px 0 6px}
+  #empty-pane p{font-size:12.5px; line-height:1.7}
+  kbd{font:11px var(--mono); background:var(--panel2); border:1px solid var(--border);
+      border-bottom-width:2px; border-radius:4px; padding:1px 5px; color:var(--text2)}
+
+  /* ── 标注模式(仅评审用,区分 后端接口/WS/纯前端/一期占位) ── */
+  body.anno [data-anno]{outline:1.5px dashed; outline-offset:1px; position:relative}
+  body.anno [data-anno]::after{content:attr(data-anno-tag); position:absolute; top:-9px; left:0; z-index:80;
+    font:700 9px/1.5 var(--mono); padding:0 4px; border-radius:2px; color:#fff; pointer-events:none; white-space:nowrap}
+  body.anno [data-anno="api"]{outline-color:#4d9de0}
+  body.anno [data-anno="api"]::after{background:#4d9de0}
+  body.anno [data-anno="ws"]{outline-color:#b07fd9}
+  body.anno [data-anno="ws"]::after{background:#b07fd9}
+  body.anno [data-anno="ui"]{outline-color:#4caf7d}
+  body.anno [data-anno="ui"]::after{background:#4caf7d}
+  body.anno [data-anno="mock"]{outline-color:#d9a03f}
+  body.anno [data-anno="mock"]::after{background:#d9a03f; color:#3a2c00}
+  #anno-legend{flex:none; display:flex; align-items:center; gap:16px; padding:5px 14px; font-size:11.5px;
+    color:var(--text2); background:var(--panel2); border-bottom:1px solid var(--border); font-family:var(--mono)}
+  #anno-legend .lg{display:flex; align-items:center; gap:6px; white-space:nowrap}
+  #anno-legend .sq{width:10px; height:10px; border-radius:2px; display:inline-block}
+  #anno-legend .close{margin-left:auto; cursor:pointer; color:var(--muted); padding:0 4px}
+  #anno-legend .close:hover{color:var(--text)}
+
+  /* 下拉菜单(AI 面板:Provider 切换 / 会话历史) */
+  .dd{position:relative}
+  .dd-menu{position:absolute; top:calc(100% + 6px); right:0; min-width:230px; background:var(--panel2);
+           border:1px solid var(--border); border-radius:8px; box-shadow:0 10px 32px rgba(0,0,0,.35);
+           z-index:70; padding:4px}
+  .dd-menu.dd-left{left:0; right:auto}
+  .dd-item{display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:5px;
+           cursor:pointer; font-size:12px; color:var(--text2); white-space:nowrap}
+  .dd-item:hover{background:var(--hover); color:var(--text)}
+  .dd-item.active{color:var(--accent)}
+  .dd-item .sub{margin-left:auto; font-size:11px; color:var(--muted); font-family:var(--mono)}
+  .dd-sep{height:1px; background:var(--border); margin:4px 6px}
+  .prov{cursor:pointer; font-family:var(--mono)}
+  button.prov{border:1px solid var(--border); border-radius:10px; padding:2px 8px; font-size:11px;
+              color:var(--muted)}
+  button.prov:hover{color:var(--text); border-color:var(--accent)}
+
+  /* 设置弹窗(AI Provider 管理) */
+  .settings-body{display:flex; min-height:320px}
+  .prov-list{width:210px; flex:none; border-right:1px solid var(--border); padding:10px;
+             display:flex; flex-direction:column; gap:6px}
+  .prov-item{padding:8px 10px; border-radius:6px; cursor:pointer; border:1px solid transparent}
+  .prov-item:hover{background:var(--hover)}
+  .prov-item.sel{border-color:var(--accent); background:var(--accent-dim)}
+  .prov-item .pn{font-size:12.5px; display:flex; align-items:center; gap:6px}
+  .prov-item .pm{font-size:11px; color:var(--muted); font-family:var(--mono); margin-top:2px}
+  .prov-item .on{color:var(--green); font-size:10.5px; border:1px solid var(--green); border-radius:8px;
+                 padding:0 5px; margin-left:auto}
+  .prov-form{flex:1; padding:16px 18px; display:flex; flex-direction:column}
+  .prov-actions{display:flex; align-items:center; gap:8px; margin-top:14px}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- 顶栏 -->
+  <header id="topbar">
+    <div class="logo">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+        <circle cx="10" cy="10" r="8.2" stroke="#4d9de0" stroke-width="1.6"/>
+        <circle cx="10" cy="10" r="2.4" fill="#4d9de0"/>
+        <path d="M10 0v4M10 16v4M0 10h4M16 10h4" stroke="#4d9de0" stroke-width="1.6"/>
+      </svg>
+      <span><b>DB</b>Shooter</span>
+    </div>
+    <button class="tb-btn primary" id="btn-new-conn" data-anno="api" data-anno-tag="API" title="保存 → POST /api/connections,密码 Fernet 加密后存内置 sqlite 的 connections 表">
+      <svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 1v10M1 6h10" stroke="currentColor" stroke-width="1.6"/></svg>
+      新建连接
+    </button>
+    <button class="tb-btn" id="btn-new-sql" data-anno="ui" data-anno-tag="UI" title="纯前端:新开一个 SQL 编辑器 Tab">
+      <svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 1v10M1 6h10" stroke="currentColor" stroke-width="1.6"/></svg>
+      SQL
+    </button>
+    <div class="tb-sep"></div>
+    <button class="tb-btn" id="btn-run" data-anno="ws" data-anno-tag="WS" title="对当前 SQL Tab 触发 WS query.execute,结果由 WS 推送 + REST 分页" >
+      <svg width="11" height="11" viewBox="0 0 11 11"><path d="M2.5 1.5l7 4-7 4z" fill="#4caf7d"/></svg>
+      执行
+    </button>
+    <div class="tb-right">
+      <button class="tb-btn" id="btn-ai" data-anno="ui" data-anno-tag="UI" title="纯前端:AI 面板开关">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+          <path d="M6.5 1l1.35 3.65L11.5 6 7.85 7.35 6.5 11 5.15 7.35 1.5 6l3.65-1.35z" fill="currentColor"/>
+        </svg>
+        AI 助手
+      </button>
+      <button class="tb-btn" id="btn-theme" data-anno="ui" data-anno-tag="UI" title="暗/亮主题切换;偏好存 settings 表 + localStorage 兜底"></button>
+      <button class="tb-btn" id="btn-anno" title="标注模式:显示 后端接口/WS/纯前端/一期占位 标记">标注</button>
+      <button class="tb-btn" id="btn-settings" data-anno="api" data-anno-tag="API" title="设置页:一期含 AI Provider 管理(ai_providers 表 CRUD),其余后置">设置</button>
+    </div>
+  </header>
+
+  <!-- 标注模式图例 -->
+  <div id="anno-legend" class="hidden">
+    <b style="color:var(--text)">标注模式</b>
+    <span class="lg"><span class="sq" style="background:#4d9de0"></span>API · 后端 REST 接口</span>
+    <span class="lg"><span class="sq" style="background:#b07fd9"></span>WS · WebSocket 推送</span>
+    <span class="lg"><span class="sq" style="background:#4caf7d"></span>UI · 纯前端,一期实现</span>
+    <span class="lg"><span class="sq" style="background:#d9a03f"></span>占位 · 一期不做/仅假数据</span>
+    <span style="color:var(--muted)">悬停标注元素查看对应接口与说明</span>
+    <span class="close" id="anno-close">关闭 ✕</span>
+  </div>
+
+  <div id="middle">
+    <!-- 左侧连接树 -->
+    <aside id="sidebar">
+      <div class="side-head">
+        <span class="side-title">数据库连接</span>
+        <button class="icon-btn" id="btn-new-conn2" title="新建连接">
+          <svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 1v10M1 6h10" stroke="currentColor" stroke-width="1.4"/></svg>
+        </button>
+      </div>
+      <div class="side-search" data-anno="ui" data-anno-tag="UI" title="纯前端:树节点本地过滤"><input id="tree-filter" placeholder="过滤连接与对象…"></div>
+      <div id="tree" data-anno="api" data-anno-tag="API" title="GET /api/connections(连接列表)+ GET /api/connections/{id}/metadata?path=(树节点懒加载;Redis 用 SCAN 游标,禁止 KEYS *)"></div>
+    </aside>
+    <div class="vsplit" id="split-left"></div>
+
+    <!-- 工作区 -->
+    <main id="workspace">
+      <div id="tabbar" data-anno="api" data-anno-tag="API" title="工作区持久化:GET/POST/PUT/DELETE /api/workspace/tabs —— 页签与 SQL 内容存 sqlite editor_tabs 表(内容防抖 800ms 自动保存,开/关/排序/切换立即写),重开自动恢复。原型用 localStorage 演示:改改 SQL、关掉几个 Tab 再刷新页面试试"></div>
+      <div id="panes">
+        <div id="empty-pane" class="hidden">
+          <div class="box">
+            <svg width="46" height="46" viewBox="0 0 46 46" fill="none" style="opacity:.45">
+              <ellipse cx="23" cy="10" rx="14" ry="5.5" stroke="#8a91a0" stroke-width="1.6"/>
+              <path d="M9 10v26c0 3 6.3 5.5 14 5.5s14-2.5 14-5.5V10" stroke="#8a91a0" stroke-width="1.6"/>
+              <path d="M9 23c0 3 6.3 5.5 14 5.5s14-2.5 14-5.5" stroke="#8a91a0" stroke-width="1.6"/>
+            </svg>
+            <h2>没有打开的编辑器</h2>
+            <p>双击左侧树中的表、集合或键开始浏览，<br>或按 <kbd>Ctrl</kbd>+<kbd>N</kbd> 新建 SQL 编辑器。</p>
+          </div>
+        </div>
+      </div>
+    </main>
+    <div class="vsplit hidden" id="split-ai"></div>
+
+    <!-- AI 面板 -->
+    <aside id="aipanel" class="hidden">
+      <div class="ai-head">
+        <svg width="14" height="14" viewBox="0 0 13 13" fill="none">
+          <path d="M6.5 1l1.35 3.65L11.5 6 7.85 7.35 6.5 11 5.15 7.35 1.5 6l3.65-1.35z" fill="#4d9de0"/>
+        </svg>
+        AI 助手 · Text-to-SQL
+        <div class="dd">
+          <button class="icon-btn" id="sess-btn" data-anno="api" data-anno-tag="API"
+                  title="会话历史:GET /api/ai/sessions · 会话与消息持久化到 sqlite(ai_sessions/ai_messages)">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.6" stroke="currentColor" stroke-width="1.3"/><path d="M7 4v3.2l2.2 1.3" stroke="currentColor" stroke-width="1.3"/></svg>
+          </button>
+          <div class="dd-menu dd-left hidden" id="sess-menu"></div>
+        </div>
+        <div class="dd" style="margin-left:auto">
+          <button class="prov" id="prov-btn" data-anno="api" data-anno-tag="API"
+                  title="生效中的 AI Provider(OpenAI 兼容,多配置单生效);点击切换 → POST /api/ai/providers/{id}/activate">DeepSeek ▾</button>
+          <div class="dd-menu hidden" id="prov-menu"></div>
+        </div>
+      </div>
+      <div class="ai-ctx" data-anno="ui" data-anno-tag="UI" title="纯前端选择上下文表;表结构内容来自元数据接口,随 ai.text2sql 请求一起发送">
+        <span class="lbl">已附加表结构:</span>
+        <span class="chip">shop.users <i title="移除">✕</i></span>
+        <span class="chip">shop.orders <i title="移除">✕</i></span>
+        <span class="chip add">＋ 添加表</span>
+      </div>
+      <div id="ai-msgs" data-anno="ws" data-anno-tag="WS" title="WS ai.text2sql 流式输出;历史会话自 sqlite 加载(assistant 消息存 {text, sql} JSON)">
+        <div class="msg bot">
+          <div class="who">AI 助手</div>
+          <p>用自然语言描述你要查的数据，我会结合 <b>prod-mysql</b> 的表结构生成 SQL。生成的语句只会先放入编辑器，由你确认后执行。</p>
+          <div class="ai-suggests" data-anno="mock" data-anno-tag="占位" title="一期占位:预置示例问题,后续可做成可配置">
+            <button data-q="统计 9 月份每个用户的订单总额，按金额从高到低排">统计 9 月每个用户的订单总额 TOP 20</button>
+            <button data-q="查最近 7 天新注册的用户">最近 7 天新注册的用户</button>
+            <button data-q="库存不足 10 件的商品有哪些">库存不足 10 件的商品</button>
+          </div>
+        </div>
+      </div>
+      <div class="ai-input" data-anno="ws" data-anno-tag="WS" title="发送 → WS ai.text2sql {session_id, conn_id, question, tables[]};回答落库 ai_messages">
+        <div class="box">
+          <textarea id="ai-text" placeholder="例如:查一下上个月成交额最高的 10 个用户…"></textarea>
+          <button class="ai-send" id="ai-send" title="发送">
+            <svg width="13" height="13" viewBox="0 0 13 13"><path d="M1.5 6.5h9M7 3l3.5 3.5L7 10" stroke="currentColor" stroke-width="1.6" fill="none"/></svg>
+          </button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- 状态栏 -->
+  <footer id="statusbar">
+    <span data-anno="api" data-anno-tag="API" title="当前 Tab 对应连接的状态(来自连接池心跳)"><span class="dot"></span>&nbsp;&nbsp;<span id="sb-conn">prod-mysql · MySQL 8.0.36</span></span>
+    <span id="sb-db">库: shop</span>
+    <span class="sp"></span>
+    <span id="sb-rows" data-anno="ws" data-anno-tag="WS" title="最近一次执行的行数/耗时,来自 WS done 事件">—</span>
+    <span id="sb-ms"></span>
+    <span id="sb-ai" data-anno="api" data-anno-tag="API" title="生效中的 Provider(ai_providers.is_active=1)">AI: DeepSeek ✓</span>
+  </footer>
+</div>
+
+<!-- 新建连接弹窗 -->
+<div id="modal-mask" class="hidden">
+  <div class="modal">
+    <div class="modal-head">新建数据库连接
+      <button class="icon-btn" id="modal-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="db-cards" id="db-cards" data-anno="ui" data-anno-tag="UI" title="纯前端:类型卡片切换表单字段"></div>
+      <div class="form-grid" id="conn-form" data-anno="api" data-anno-tag="API" title="保存 → POST /api/connections;密码 Fernet 加密存 sqlite connections 表"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" id="btn-test" data-anno="api" data-anno-tag="API" title="POST /api/connections/test(用表单内容临时连接,不入库)">测试连接</button>
+      <span class="test-msg" id="test-msg"></span>
+      <span class="sp"></span>
+      <button class="btn" id="btn-cancel">取消</button>
+      <button class="btn primary" id="btn-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 设置弹窗:AI Provider 管理 -->
+<div id="settings-mask" class="hidden">
+  <div class="modal" style="width:680px">
+    <div class="modal-head">设置 · AI Provider(OpenAI 兼容)
+      <button class="icon-btn" id="settings-close">✕</button>
+    </div>
+    <div class="settings-body">
+      <div class="prov-list" data-anno="api" data-anno-tag="API"
+           title="GET /api/ai/providers · 存 sqlite ai_providers 表,api_key Fernet 加密">
+        <div id="prov-items" style="display:flex;flex-direction:column;gap:6px"></div>
+        <button class="chip add" id="prov-add">＋ 新增 Provider</button>
+      </div>
+      <div class="prov-form">
+        <div class="form-grid" data-anno="api" data-anno-tag="API" title="保存 → PUT /api/ai/providers/{id}">
+          <div class="field"><label>名称</label><input id="pf-name"></div>
+          <div class="field"><label>模型</label><input id="pf-model"></div>
+          <div class="field full"><label>Base URL(任何 OpenAI 兼容服务)</label><input id="pf-base"></div>
+          <div class="field full"><label>API Key(Fernet 加密存储,本地服务可留空)</label><input id="pf-key" type="password"></div>
+        </div>
+        <div class="prov-actions">
+          <button class="btn" id="pf-test" data-anno="api" data-anno-tag="API" title="POST /api/ai/providers/{id}/test(后端请求 GET {base_url}/models 验证)">测试</button>
+          <span class="test-msg" id="pf-msg"></span>
+          <span style="flex:1"></span>
+          <button class="btn" id="pf-active" data-anno="api" data-anno-tag="API" title="POST /api/ai/providers/{id}/activate · 全表唯一生效,事务内先清后设">设为生效</button>
+          <button class="btn primary" id="pf-save">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+'use strict';
+/* ════════════════════════ 工具 ════════════════════════ */
+const $ = (s, el=document) => el.querySelector(s);
+const $$ = (s, el=document) => [...el.querySelectorAll(s)];
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+
+function toast(msg, ok){
+  const t = document.createElement('div');
+  t.className = 'toast' + (ok ? ' ok' : '');
+  t.textContent = msg;
+  $('#toasts').appendChild(t);
+  setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .3s'; setTimeout(()=>t.remove(), 320); }, 2400);
+}
+
+/* 小图标 */
+const IC = {
+  db: '<svg width="15" height="15" viewBox="0 0 15 15" fill="none"><ellipse cx="7.5" cy="3.5" rx="5.5" ry="2.2" stroke="currentColor" stroke-width="1.1"/><path d="M2 3.5v8c0 1.2 2.5 2.2 5.5 2.2s5.5-1 5.5-2.2v-8" stroke="currentColor" stroke-width="1.1"/><path d="M2 7.5c0 1.2 2.5 2.2 5.5 2.2s5.5-1 5.5-2.2" stroke="currentColor" stroke-width="1.1"/></svg>',
+  folder: '<svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M1.5 3.5h4l1.5 2h6.5v6a1 1 0 01-1 1h-10a1 1 0 01-1-1v-8z" stroke="currentColor" stroke-width="1.1"/></svg>',
+  table: '<svg width="15" height="15" viewBox="0 0 15 15" fill="none"><rect x="1.5" y="2.5" width="12" height="10" rx="1" stroke="currentColor" stroke-width="1.1"/><path d="M1.5 5.5h12M5.8 5.5v7" stroke="currentColor" stroke-width="1.1"/></svg>',
+  view: '<svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M1.5 7.5S3.8 3.8 7.5 3.8s6 3.7 6 3.7-2.3 3.7-6 3.7-6-3.7-6-3.7z" stroke="currentColor" stroke-width="1.1"/><circle cx="7.5" cy="7.5" r="1.6" stroke="currentColor" stroke-width="1.1"/></svg>',
+  key: '<svg width="15" height="15" viewBox="0 0 15 15" fill="none"><circle cx="4.5" cy="4.5" r="2.7" stroke="currentColor" stroke-width="1.1"/><path d="M6.5 6.5l6 6M10 10l1.8-1.8M12 12l1.5-1.5" stroke="currentColor" stroke-width="1.1"/></svg>',
+  coll: '<svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M4 1.5h7.5v10H4z" stroke="currentColor" stroke-width="1.1"/><path d="M2.5 4h7.5v10H2.5z" fill="var(--panel)" stroke="currentColor" stroke-width="1.1"/></svg>',
+  col: '<svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M2.5 12.5v-7a3 3 0 016 0v7M2.5 8.5h6" stroke="currentColor" stroke-width="1.1"/></svg>',
+};
+const DB_BADGE = { mysql:['My','var(--c-mysql)'], pg:['Pg','var(--c-pg)'], sqlite:['Sq','var(--c-sqlite)'],
+                   redis:['Re','var(--c-redis)'], mongo:['Mg','var(--c-mongo)'] };
+const badge = t => `<span class="dbbadge" style="background:${DB_BADGE[t][1]}">${DB_BADGE[t][0]}</span>`;
+
+/* ════════════════════════ 连接树 ════════════════════════ */
+const treeData = [
+  { name:'prod-mysql', type:'mysql', open:true, children:[
+    { name:'shop', icon:'db', open:true, children:[
+      { name:'表', icon:'folder', children:[
+        { name:'users', icon:'table', kind:'table', conn:'prod-mysql' },
+        { name:'orders', icon:'table', kind:'table', conn:'prod-mysql' },
+        { name:'products', icon:'table', kind:'table', conn:'prod-mysql' },
+      ]},
+      { name:'视图', icon:'folder', children:[ { name:'v_order_daily', icon:'view', kind:'view', conn:'prod-mysql'} ]},
+    ]},
+  ]},
+  { name:'local-pg', type:'pg', children:[
+    { name:'appdb', icon:'db', children:[
+      { name:'public', icon:'folder', children:[
+        { name:'users', icon:'table', kind:'table', conn:'local-pg' },
+        { name:'audit_log', icon:'table', kind:'table', conn:'local-pg' },
+      ]},
+    ]},
+  ]},
+  { name:'cache-redis', type:'redis', children:[
+    { name:'db0', icon:'db', children:[
+      { name:'user:* (12)', icon:'folder', children:[
+        { name:'user:1001:profile', icon:'key', kind:'rkey', conn:'cache-redis' } ]},
+      { name:'session:* (208)', icon:'folder', children:[
+        { name:'session:8f2a9c', icon:'key', kind:'rkey', conn:'cache-redis' } ]},
+      { name:'rank:weekly', icon:'key', kind:'rkey', conn:'cache-redis' },
+      { name:'queue:jobs', icon:'key', kind:'rkey', conn:'cache-redis' },
+    ]},
+  ]},
+  { name:'mongo-dev', type:'mongo', children:[
+    { name:'analytics', icon:'db', children:[
+      { name:'events', icon:'coll', kind:'coll', conn:'mongo-dev' },
+      { name:'user_logs', icon:'coll', kind:'coll', conn:'mongo-dev' },
+    ]},
+  ]},
+  { name:'demo-sqlite', type:'sqlite', children:[
+    { name:'main', icon:'db', children:[
+      { name:'users', icon:'table', kind:'table', conn:'demo-sqlite' },
+      { name:'logs', icon:'table', kind:'table', conn:'demo-sqlite' },
+    ]},
+  ]},
+];
+
+function renderTree(){
+  const root = $('#tree'); root.innerHTML = '';
+  const build = (node, parent) => {
+    const el = document.createElement('div');
+    const isLeaf = !node.children;
+    el.className = 'tn' + (isLeaf ? ' leaf' : '') + (node.open ? ' open' : '');
+    const icon = node.type ? badge(node.type) : `<span class="tn-ico">${IC[node.icon||'table']}</span>`;
+    el.innerHTML = `<div class="tn-row">
+        <span class="tn-arrow">▶</span>${icon}
+        <span class="tn-label" title="${esc(node.name)}">${esc(node.name)}</span>
+        ${node.type ? '<span class="tn-meta">已连接</span>' : ''}
+      </div>`;
+    const row = el.firstElementChild;
+    row.addEventListener('click', () => {
+      if (!isLeaf){ node.open = !node.open; el.classList.toggle('open'); }
+      $$('.tn-row.sel', root).forEach(r => r.classList.remove('sel'));
+      row.classList.add('sel');
+    });
+    row.addEventListener('dblclick', () => {
+      if (node.kind === 'table' || node.kind === 'view')
+        addTab({ type:'data', title:node.name, sub:node.conn, data:{ table:node.name } });
+      else if (node.kind === 'coll')
+        addTab({ type:'mongo', title:node.name, sub:node.conn, data:{ coll:node.name } });
+      else if (node.kind === 'rkey')
+        addTab({ type:'redis', title:'键浏览', sub:node.conn, data:{ key:node.name } });
+    });
+    if (!isLeaf){
+      const ch = document.createElement('div');
+      ch.className = 'tn-children';
+      node.children.forEach(c => build(c, ch));
+      el.appendChild(ch);
+    }
+    parent.appendChild(el);
+  };
+  treeData.forEach(n => build(n, root));
+}
+renderTree();
+
+/* 树过滤 */
+$('#tree-filter').addEventListener('input', e => {
+  const q = e.target.value.trim().toLowerCase();
+  const walk = el => {
+    const row = el.firstElementChild;
+    const label = $('.tn-label', row).textContent.toLowerCase();
+    let childHit = false;
+    $$(':scope > .tn-children > .tn', el).forEach(c => { if (walk(c)) childHit = true; });
+    const hit = !q || label.includes(q) || childHit;
+    el.style.display = hit ? '' : 'none';
+    if (q && childHit) el.classList.add('open');
+    return hit;
+  };
+  $$('#tree > .tn').forEach(walk);
+});
+
+/* ════════════════════════ 语法高亮 ════════════════════════ */
+const SQL_KW = new Set(('select from where and or not null in is like between join left right inner outer ' +
+  'cross on group by order limit offset as asc desc distinct insert into values update set delete create ' +
+  'table primary key having union all case when then else end exists date interval now true false').split(' '));
+const SQL_FN = new Set(['count','sum','avg','max','min','coalesce','date_format','json_extract']);
+
+function makeHighlighter(keywords, functions){
+  const re = /(--[^\n]*)|(\/\*[\s\S]*?\*\/)|('(?:[^'\\]|\\.)*')|(\b\d+(?:\.\d+)?\b)|([A-Za-z_][\w$]*)/g;
+  return src => {
+    let out = '', last = 0, m;
+    while ((m = re.exec(src))){
+      out += esc(src.slice(last, m.index));
+      const tok = m[0];
+      if (m[1] || m[2]) out += `<span class="tk-c">${esc(tok)}</span>`;
+      else if (m[3]) out += `<span class="tk-s">${esc(tok)}</span>`;
+      else if (m[4]) out += `<span class="tk-n">${esc(tok)}</span>`;
+      else if (m[5]){
+        const low = tok.toLowerCase();
+        out += keywords.has(low) ? `<span class="tk-k">${esc(tok)}</span>`
+             : functions.has(low) ? `<span class="tk-f">${esc(tok)}</span>` : esc(tok);
+      }
+      last = m.index + tok.length;
+    }
+    return out + esc(src.slice(last)) + '\n';
+  };
+}
+const hlSql = makeHighlighter(SQL_KW, SQL_FN);
+const hlJson = makeHighlighter(new Set(['true','false','null','db','find','sort','limit','aggregate']),
+                               new Set(['ISODate','ObjectId']));
+
+/* ════════════════════════ 可编辑代码编辑器(高亮 overlay) ════════════════════════ */
+function createEditor({ value='', hl=hlSql, onExecute=null, onInput=null }){
+  const wrap = document.createElement('div');
+  wrap.className = 'editor';
+  wrap.innerHTML = `<div class="gutter"><div class="gutter-inner"></div></div>
+    <div class="code"><pre class="hl" aria-hidden="true"><code></code></pre>
+    <textarea class="input" spellcheck="false" wrap="off"></textarea></div>`;
+  const ta = $('.input', wrap), code = $('code', wrap), hlEl = $('.hl', wrap), gi = $('.gutter-inner', wrap);
+  let lastLines = 0;
+  const render = () => {
+    code.innerHTML = hl(ta.value);
+    const lines = ta.value.split('\n').length;
+    if (lines !== lastLines){
+      gi.textContent = Array.from({length:lines}, (_,i) => i+1).join('\n');
+      lastLines = lines;
+    }
+  };
+  const fire = () => onInput && onInput(ta.value);
+  const sync = () => {
+    hlEl.style.transform = `translate(${-ta.scrollLeft}px,${-ta.scrollTop}px)`;
+    gi.style.transform = `translateY(${-ta.scrollTop}px)`;
+  };
+  ta.addEventListener('input', () => { render(); sync(); fire(); });
+  ta.addEventListener('scroll', sync);
+  ta.addEventListener('keydown', e => {
+    if (e.key === 'Tab'){
+      e.preventDefault();
+      const { selectionStart:s, selectionEnd:en } = ta;
+      ta.setRangeText('  ', s, en, 'end'); render();
+    } else if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && onExecute){
+      e.preventDefault(); onExecute(ta.value);
+    }
+  });
+  ta.value = value; render();
+  return { el:wrap, ta, get:() => ta.value, set:v => { ta.value = v; render(); sync(); fire(); },
+           append:v => { ta.value = ta.value.replace(/\s*$/,'') + '\n\n' + v + '\n'; render(); fire(); },
+           focus:() => ta.focus() };
+}
+
+/* ════════════════════════ 模拟数据 ════════════════════════ */
+const FIRST = ['伟','芳','娜','磊','静','洋','杰','婷','浩','雪'];
+const LAST  = ['张','王','李','赵','刘','陈','杨','周','吴','徐'];
+const CITY  = ['上海','北京','深圳','杭州','成都','广州','南京','武汉'];
+function genUsers(n){
+  const rows = [];
+  for (let i = 1; i <= n; i++){
+    const name = LAST[i%10] + FIRST[(i*7)%10];
+    const d = new Date(2026, (i*3)%9, (i*13)%27+1, (i*5)%24, (i*17)%60);
+    rows.push([i, name, `${name}${i}@example.com`, CITY[i%8], d.toISOString().slice(0,16).replace('T',' '),
+               i%9===0 ? 'disabled' : 'active']);
+  }
+  return rows;
+}
+function genOrders(n){
+  const rows = [];
+  for (let i = 1; i <= n; i++){
+    const d = new Date(2026, 8, (i*3)%15+1, (i*7)%24, (i*11)%60);
+    rows.push([10240+i, 1+(i*13)%58, (i*137%3000 + 9.9).toFixed(2),
+               ['paid','paid','paid','refund','pending'][i%5], d.toISOString().slice(0,16).replace('T',' ')]);
+  }
+  return rows;
+}
+const COL_PRESETS = {
+  users:    { cols:[['id','int'],['name','varchar'],['email','varchar'],['city','varchar'],['created_at','datetime'],['status','varchar']], rows:genUsers(60) },
+  orders:   { cols:[['id','bigint'],['user_id','int'],['amount','decimal(10,2)'],['status','varchar'],['created_at','datetime']], rows:genOrders(80) },
+  products: { cols:[['id','int'],['sku','varchar'],['name','varchar'],['price','decimal(10,2)'],['stock','int']],
+              rows:Array.from({length:40},(_,i)=>[i+1,`SKU-${1000+i}`,['机械键盘','降噪耳机','人体工学椅','4K 显示器','拓展坞'][i%5],(199+i*37%1200).toFixed(2), (i*29)%150]) },
+};
+const JOIN_RESULT = {
+  cols:[['id','int'],['name','varchar'],['city','varchar'],['amount','decimal(10,2)'],['created_at','datetime']],
+  rows: genOrders(46).map((o,i) => { const u = COL_PRESETS.users.rows[i%60]; return [u[0], u[1], u[3], o[2], o[4]]; })
+};
+
+function gridEl(cols, rows, cap=100){
+  const t = document.createElement('table');
+  t.className = 'grid';
+  const shown = rows.slice(0, cap);
+  t.innerHTML = `<thead><tr><th style="text-align:right">#</th>${
+      cols.map(c => `<th>${esc(c[0])}<span class="col-type">${esc(c[1]||'')}</span></th>`).join('')
+    }</tr></thead><tbody>${
+      shown.map((r,i) => `<tr><td class="rn">${i+1}</td>${r.map(v =>
+        v === null ? '<td><span class="null">NULL</span></td>' : `<td>${esc(String(v))}</td>`).join('')}</tr>`).join('')
+    }</tbody>`;
+  return t;
+}
+
+/* ════════════════════════ Tab 系统 ════════════════════════ */
+const tabs = []; let activeId = null; let seq = 1;
+const paneHosts = {};   /* tabId -> pane element */
+const sqlEditors = {};  /* tabId -> editor api */
+
+const STATUS_META = {
+  sql:   t => [`${t.sub || 'prod-mysql'} · MySQL 8.0.36`, '库: shop'],
+  data:  t => [`${t.sub} · 表数据`, ''],
+  redis: t => [`${t.sub} · Redis 7.2`, 'db0'],
+  mongo: t => [`${t.sub} · MongoDB 7.0`, '库: analytics'],
+};
+
+/* 工作区持久化(原型用 localStorage 演示;正式实现存 sqlite editor_tabs 表) */
+let saveTimer = null;
+function saveWorkspace(immediate){
+  clearTimeout(saveTimer);
+  const write = () => localStorage.setItem('ds-ws', JSON.stringify({
+    activeId, seq, sqlSeq,
+    tabs: tabs.map(t => ({ id:t.id, type:t.type, title:t.title, sub:t.sub, data:t.data }))
+  }));
+  if (immediate) write(); else saveTimer = setTimeout(write, 600);
+}
+function loadWorkspace(){
+  try{
+    const ws = JSON.parse(localStorage.getItem('ds-ws') || 'null');
+    if (!ws || !ws.tabs || !ws.tabs.length) return false;
+    ws.tabs.forEach(t => tabs.push(t));
+    seq = ws.seq || 100; sqlSeq = ws.sqlSeq || 2;
+    renderTabbar();
+    activate(tabs.some(t => t.id === ws.activeId) ? ws.activeId : tabs[0].id);
+    return true;
+  }catch(e){ return false; }
+}
+
+function addTab({ type, title, sub, data }){
+  const id = 't' + (seq++);
+  const tab = { id, type, title, sub, data: data || {} };
+  tabs.push(tab);
+  renderTabbar(); activate(id);
+  return tab;
+}
+function closeTab(id, ev){
+  if (ev) ev.stopPropagation();
+  const i = tabs.findIndex(t => t.id === id);
+  if (i < 0) return;
+  tabs.splice(i,1);
+  paneHosts[id]?.remove(); delete paneHosts[id]; delete sqlEditors[id];
+  if (activeId === id) activate(tabs[Math.min(i, tabs.length-1)]?.id || null);
+  else { renderTabbar(); saveWorkspace(true); }
+}
+function activate(id){
+  activeId = id;
+  renderTabbar();
+  const panes = $('#panes');
+  $$('.pane', panes).forEach(p => p.classList.add('hidden'));
+  $('#empty-pane').classList.toggle('hidden', !!id);
+  if (!id) return;
+  const tab = tabs.find(t => t.id === id);
+  if (!paneHosts[id]){
+    const pane = PANE_FACTORY[tab.type](tab);
+    paneHosts[id] = pane; panes.appendChild(pane);
+  }
+  paneHosts[id].classList.remove('hidden');
+  const [conn, db] = STATUS_META[tab.type](tab);
+  $('#sb-conn').textContent = conn; $('#sb-db').textContent = db;
+  saveWorkspace(true);
+}
+function renderTabbar(){
+  const bar = $('#tabbar'); bar.innerHTML = '';
+  const TICON = { sql:'<span style="color:var(--accent);font-family:var(--mono);font-size:11px">ƒ</span>',
+                  data:IC.table, redis:IC.key, mongo:IC.coll };
+  tabs.forEach(t => {
+    const el = document.createElement('div');
+    el.className = 'tab' + (t.id === activeId ? ' active' : '');
+    el.innerHTML = `<span class="tn-ico">${TICON[t.type]}</span>
+      <span>${esc(t.title)}</span>
+      ${t.sub ? `<span class="tab-sub">${esc(t.sub)}</span>` : ''}
+      <span class="tab-close" title="关闭">✕</span>`;
+    el.addEventListener('click', () => activate(t.id));
+    $('.tab-close', el).addEventListener('click', ev => closeTab(t.id, ev));
+    bar.appendChild(el);
+  });
+}
+
+/* ── SQL 工作台面板 ── */
+function createSqlPane(tab){
+  const pane = document.createElement('section');
+  pane.className = 'pane hidden';
+  pane.innerHTML = `
+    <div class="pane-toolbar">
+      <button class="pt-btn run" data-anno="ws" data-anno-tag="WS" title="WS query.execute → 推送 started/rows_batch/done;大结果集分页 GET /api/queries/{qid}/rows">▶ 执行 <span style="opacity:.6;font-size:11px">Ctrl+Enter</span></button>
+      <button class="pt-btn" data-anno="api" data-anno-tag="API" title="后端透传各库 EXPLAIN(MySQL/PG;SQLite 为 EXPLAIN QUERY PLAN)">执行计划</button>
+      <button class="pt-btn" data-anno="ui" data-anno-tag="UI" title="纯前端 sql-formatter,无后端调用">格式化</button>
+      <div class="pt-conn" data-anno="api" data-anno-tag="API" title="GET /api/connections;切换即更换本 Tab 的查询会话">连接
+        <select><option>prod-mysql / shop</option><option>local-pg / appdb</option><option>demo-sqlite</option></select>
+      </div>
+    </div>
+    <div class="editor-wrap" data-anno="ui" data-anno-tag="UI" title="Monaco 编辑器(原型为简化实现);SQL 内容防抖自动保存到 editor_tabs 表;表名/字段补全词表来自元数据接口"></div>
+    <div class="hsplit"></div>
+    <div class="results" data-anno="ws" data-anno-tag="WS" title="结果集:WS 推送首批行 + REST 分页拉取;执行计划/日志事件同源">
+      <div class="result-tabs">
+        <span class="rt-tab active" data-r="grid">结果 <span class="rt-badge hidden">0</span></span>
+        <span class="rt-tab" data-r="plan">执行计划</span>
+        <span class="rt-tab" data-r="log">日志</span>
+        <span class="result-status">就绪 · Ctrl+Enter 执行</span>
+      </div>
+      <div class="result-body">
+        <div class="result-placeholder">执行 SQL 后在此展示结果集</div>
+      </div>
+    </div>`;
+
+  const editor = createEditor({ value: tab.data.sql || DEFAULT_SQL, onExecute: run,
+    onInput: v => { tab.data.sql = v; saveWorkspace(); } });
+  sqlEditors[tab.id] = editor;
+  $('.editor-wrap', pane).appendChild(editor.el);
+
+  const body = $('.result-body', pane), status = $('.result-status', pane),
+        badgeEl = $('.rt-badge', pane), logLines = [];
+  let current = 'grid', planTxt = '';
+
+  function mockResult(sql){
+    const s = sql.toLowerCase();
+    if (/\b(insert|update|delete)\b/.test(s))
+      return { affected: Math.max(1, Math.round(Math.random()*24)) };
+    if (s.includes('count('))
+      return { cols:[['total','bigint']], rows:[[14283]] };
+    if (s.includes('join') || (s.includes('orders') && s.includes('users'))) return JOIN_RESULT;
+    if (s.includes('orders')) return COL_PRESETS.orders;
+    if (s.includes('products')) return COL_PRESETS.products;
+    return COL_PRESETS.users;
+  }
+
+  function show(){
+    body.innerHTML = '';
+    if (current === 'plan'){ const p = document.createElement('pre'); p.className = 'plan';
+      p.textContent = planTxt || '(先在编辑器中执行一条 SELECT)'; body.appendChild(p); return; }
+    if (current === 'log'){ const l = document.createElement('pre'); l.className = 'log';
+      l.innerHTML = logLines.join('\n') || '<span style="color:var(--muted)">(暂无日志)</span>';
+      body.appendChild(l); return; }
+    if (lastGrid) body.appendChild(lastGrid);
+    else body.innerHTML = '<div class="result-placeholder">执行 SQL 后在此展示结果集</div>';
+  }
+  let lastGrid = null;
+  $$('.rt-tab', pane).forEach(rt => rt.addEventListener('click', () => {
+    $$('.rt-tab', pane).forEach(x => x.classList.remove('active'));
+    rt.classList.add('active'); current = rt.dataset.r; show();
+  }));
+
+  let running = false;
+  function run(sql){
+    if (running) return; running = true;
+    const t0 = performance.now();
+    status.textContent = '执行中…';
+    logLines.push(`<span style="color:var(--muted)">[${new Date().toLocaleTimeString('zh-CN',{hour12:false})}]</span> ${esc(sql.split('\n').filter(l=>l.trim() && !l.trim().startsWith('--'))[0] || sql).slice(0,80)}`);
+    setTimeout(() => {
+      running = false;
+      const ms = Math.max(3, Math.round(performance.now() - t0 - 380 + Math.random()*40));
+      const r = mockResult(sql);
+      if (r.affected){
+        lastGrid = null; current = 'log';
+        logLines.push(`<span class="ok">✓ 完成,影响 ${r.affected} 行 (${ms} ms)</span>`);
+        status.textContent = `影响 ${r.affected} 行 · ${ms} ms`;
+        $('#sb-rows').textContent = `影响 ${r.affected} 行`;
+      } else {
+        lastGrid = gridEl(r.cols, r.rows);
+        planTxt = `-> Limit: 200 row(s)  (cost=412.1 rows=200) (actual time=0.04..${(ms/1000).toFixed(2)} rows=${r.rows.length})\n` +
+                  `    -> Index scan on u using PRIMARY  (cost=0.35 rows=${r.rows.length})\n` +
+                  `    -> Covering index lookup on o using idx_user_created (user_id=u.id)`;
+        logLines.push(`<span class="ok">✓ ${r.rows.length} 行 (${ms} ms)</span>`);
+        badgeEl.textContent = r.rows.length; badgeEl.classList.remove('hidden');
+        status.textContent = `${r.rows.length} 行 · ${ms} ms · 已分页加载`;
+        $('#sb-rows').textContent = `${r.rows.length} 行`; current = 'grid';
+      }
+      $('#sb-ms').textContent = `${ms} ms`;
+      $$('.rt-tab', pane).forEach(x => x.classList.toggle('active', x.dataset.r === current));
+      show();
+    }, 420 + Math.random()*360);
+  }
+  $('.pt-btn.run', pane).addEventListener('click', () => run(editor.get()));
+  $('.pt-btn:nth-child(2)', pane).addEventListener('click', () => { current = 'plan';
+    $$('.rt-tab', pane).forEach(x => x.classList.toggle('active', x.dataset.r === 'plan')); show(); });
+
+  /* 上下分栏拖拽 */
+  const results = $('.results', pane);
+  drag($('.hsplit', pane), ev => {
+    const r = pane.getBoundingClientRect();
+    results.style.height = clamp(r.bottom - ev.clientY, 110, r.height - 140) + 'px';
+  }, true);
+  return pane;
+}
+
+/* ── 表数据面板 ── */
+function createDataPane(tab){
+  const preset = COL_PRESETS[tab.data.table] || COL_PRESETS.users;
+  const pane = document.createElement('section');
+  pane.className = 'pane hidden';
+  pane.innerHTML = `
+    <div class="pane-toolbar">
+      <span class="tn-ico">${IC.table}</span>
+      <b style="font-size:12.5px">${esc(tab.sub)} · ${esc(tab.data.table)}</b>
+      <button class="pt-btn" data-anno="api" data-anno-tag="API" title="重新分页拉取表数据">刷新</button>
+      <button class="pt-btn" data-anno="mock" data-anno-tag="占位" title="二期:行编辑/新增,一期表数据只读浏览">＋ 新增行</button>
+      <button class="pt-btn" data-anno="api" data-anno-tag="API" title="M4:服务端流式导出 CSV">导出 CSV</button>
+      <div class="pt-conn" data-anno="api" data-anno-tag="API" title="过滤条件下推为 WHERE,由服务端执行后返回"><input placeholder="过滤 (WHERE)…" style="width:220px;height:26px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:0 8px;font-size:12px;outline:none;color:var(--text)"></div>
+    </div>
+    <div class="result-body" style="flex:1" data-anno="api" data-anno-tag="API" title="GET 表数据分页(服务端 LIMIT/OFFSET 或游标)"></div>
+    <div class="result-tabs" style="border-top:1px solid var(--border-soft);border-bottom:0">
+      <span class="result-status" style="margin-left:0">共 12,483 行 · 已加载 ${Math.min(preset.rows.length,100)} 行 · 滚动加载更多</span>
+    </div>`;
+  $('.result-body', pane).appendChild(gridEl(preset.cols, preset.rows));
+  return pane;
+}
+
+/* ── Redis 面板 ── */
+const RKEYS = [
+  { name:'user:1001:profile', type:'hash', ttl:'剩余 6 天 21 小时', fields:[
+      ['name','张伟'],['email','zhangwei@example.com'],['city','上海'],['vip_level','3'],['last_login','2026-09-15 21:40:02']] },
+  { name:'session:8f2a9c', type:'string', ttl:'剩余 28 分 42 秒', value:'{"uid":1001,"role":"admin","ua":"Chrome/128"}' },
+  { name:'rank:weekly', type:'zset', ttl:'不过期', items:[['张伟','9820'],['王芳','8765'],['李娜','8310'],['刘洋','7994'],['陈静','7641']] },
+  { name:'queue:jobs', type:'list', ttl:'不过期', items:['job:8847:export_csv','job:8846:send_mail','job:8845:rebuild_index'] },
+  { name:'tags:hot', type:'set', ttl:'不过期', items:['mysql','postgres','redis','mongodb','sqlite'] },
+];
+const RT_COLOR = { hash:'#4d9de0', string:'#4caf7d', zset:'#d9a03f', list:'#b07fd9', set:'#e0708a' };
+
+function createRedisPane(tab){
+  const pane = document.createElement('section');
+  pane.className = 'pane hidden';
+  pane.innerHTML = `
+    <div class="pane-toolbar">
+      <span class="tn-ico">${IC.key}</span><b style="font-size:12.5px">${esc(tab.sub)} · db0</b>
+      <button class="pt-btn" data-anno="mock" data-anno-tag="占位" title="二期:键/值编辑与新建">＋ 新建键</button>
+      <button class="pt-btn" data-anno="api" data-anno-tag="API" title="一期 M2:Redis 命令执行面板(原型未展开)">命令行 (CLI)</button>
+      <div class="pt-conn" style="font-family:var(--mono)" data-anno="api" data-anno-tag="API" title="SCAN 游标分页,禁止 KEYS *">SCAN 游标分页 · 已加载 5 / 1,204 键</div>
+    </div>
+    <div class="redis-body">
+      <div class="rkey-list" data-anno="api" data-anno-tag="API" title="SCAN + 模式匹配;key 按冒号分组懒加载">
+        <div class="rkey-filter"><input placeholder="匹配模式,如 user:* "></div>
+        <div class="rkeys"></div>
+      </div>
+      <div class="rval" data-anno="api" data-anno-tag="API" title="TYPE 后按类型取值:GET/HGETALL/ZRANGE/LRANGE/SMEMBERS + PTTL">
+        <div class="rval-head"></div>
+        <div class="rval-body"></div>
+      </div>
+    </div>`;
+  const list = $('.rkeys', pane), head = $('.rval-head', pane), body = $('.rval-body', pane);
+  function showKey(k){
+    head.innerHTML = `<span class="kt" style="background:${RT_COLOR[k.type]};width:16px;height:16px;border-radius:3px;display:grid;place-items:center;font-size:9px;font-weight:700;color:#fff">${k.type[0].toUpperCase()}</span>
+      <b>${esc(k.name)}</b><span class="meta">类型 ${k.type} · TTL ${k.ttl}</span>`;
+    body.innerHTML = '';
+    if (k.type === 'string'){
+      body.innerHTML = `<pre class="plan" style="background:var(--bg);border:1px solid var(--border);border-radius:6px">${esc(k.value)}</pre>`;
+    } else if (k.type === 'hash'){
+      body.appendChild(gridEl([['field',''],['value','']], k.fields));
+    } else {
+      const head2 = k.type === 'zset' ? [['member',''],['score','']] : [['value','']];
+      body.appendChild(gridEl(head2, k.items.map(x => Array.isArray(x) ? x : [x])));
+    }
+  }
+  RKEYS.forEach((k, i) => {
+    const el = document.createElement('div');
+    el.className = 'rkey' + (i === 0 ? ' sel' : '');
+    el.innerHTML = `<span class="kt" style="background:${RT_COLOR[k.type]}">${k.type[0].toUpperCase()}</span>
+      <span class="kn">${esc(k.name)}</span><span class="kttl">${esc(k.ttl.replace('剩余 ',''))}</span>`;
+    el.addEventListener('click', () => { $$('.rkey', list).forEach(x => x.classList.remove('sel'));
+      el.classList.add('sel'); showKey(k); });
+    list.appendChild(el);
+  });
+  showKey(RKEYS[0]);
+  return pane;
+}
+
+/* ── Mongo 面板 ── */
+function createMongoPane(tab){
+  const pane = document.createElement('section');
+  pane.className = 'pane hidden';
+  pane.innerHTML = `
+    <div class="pane-toolbar">
+      <button class="pt-btn run" data-anno="api" data-anno-tag="API" title="JSON 查询提交后端,由 pymongo 执行并返回文档">▶ 执行 <span style="opacity:.6;font-size:11px">Ctrl+Enter</span></button>
+      <div class="pt-conn" data-anno="mock" data-anno-tag="占位" title="二期:文档的表格视图;一期仅 JSON 视图">集合 <b style="color:var(--text);font-family:var(--mono)">${esc(tab.data.coll)}</b> · 表格式 / JSON 视图切换</div>
+    </div>
+    <div class="mongo-body">
+      <div class="mongo-editor" data-anno="ui" data-anno-tag="UI" title="Monaco JSON 模式(原型为简化实现)"></div>
+      <div class="result-tabs">
+        <span class="rt-tab active">文档 <span class="rt-badge">3</span></span>
+        <span class="result-status">3 文档 · 5 ms</span>
+      </div>
+      <div class="mdocs" data-anno="api" data-anno-tag="API" title="文档分页返回;字段树由采样推断"></div>
+    </div>`;
+  const ed = createEditor({ hl: hlJson, onExecute(){ toast('已重新查询(原型:结果不变)', true); },
+    value: `db.${tab.data.coll}.find({\n  type: 'page_view',\n  ts: { $gte: ISODate('2026-09-01T00:00:00Z') }\n}).sort({ ts: -1 }).limit(50)` });
+  $('.mongo-editor', pane).appendChild(ed.el);
+  const docs = [
+    { _id:'66e9a1f2c8', type:'page_view', uid:1001, path:'/products/42', ts:'2026-09-15T13:22:41Z', meta:{ ua:'Chrome/128', ip:'120.244.18.2' } },
+    { _id:'66e9a1e8b1', type:'page_view', uid:1042, path:'/checkout',   ts:'2026-09-15T13:21:09Z', meta:{ ua:'Safari/17',  ip:'101.86.77.10' } },
+    { _id:'66e9a1d37a', type:'page_view', uid:1018, path:'/search?q=键盘', ts:'2026-09-15T13:19:55Z', meta:{ ua:'Edge/127',  ip:'183.192.4.66' } },
+  ];
+  const host = $('.mdocs', pane);
+  docs.forEach((d, i) => {
+    const el = document.createElement('div');
+    el.className = 'mdoc';
+    el.innerHTML = `<div class="mdoc-head">#${i+1} · _id: ObjectId("${d._id}")</div><pre>${hlJson(JSON.stringify(d, null, 2))}</pre>`;
+    host.appendChild(el);
+  });
+  $('.pt-btn.run', pane).addEventListener('click', () => toast('已重新查询(原型:结果不变)', true));
+  return pane;
+}
+
+const PANE_FACTORY = { sql:createSqlPane, data:createDataPane, redis:createRedisPane, mongo:createMongoPane };
+
+const DEFAULT_SQL = `-- prod-mysql · shop
+SELECT u.id, u.name, u.city, o.amount, o.created_at
+FROM users u
+LEFT JOIN orders o ON o.user_id = u.id
+WHERE u.status = 'active'
+ORDER BY o.created_at DESC
+LIMIT 200;`;
+
+/* ════════════════════════ 分栏拖拽 ════════════════════════ */
+function drag(handle, onMove, horizontal){
+  handle.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add(horizontal ? 'dragging-h' : 'dragging');
+    const move = ev => onMove(ev);
+    const up = () => { handle.removeEventListener('pointermove', move);
+      document.body.classList.remove('dragging', 'dragging-h'); };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up, { once:true });
+  });
+}
+drag($('#split-left'), ev => { $('#sidebar').style.width = clamp(ev.clientX, 200, 430) + 'px'; });
+drag($('#split-ai'), ev => { $('#aipanel').style.width = clamp(innerWidth - ev.clientX, 300, 560) + 'px'; });
+
+/* ════════════════════════ AI 面板 ════════════════════════ */
+const aiPanel = $('#aipanel'), splitAi = $('#split-ai');
+$('#btn-ai').addEventListener('click', () => {
+  const open = aiPanel.classList.toggle('hidden');
+  splitAi.classList.toggle('hidden', open);
+  $('#btn-ai').classList.toggle('toggled', !open);
+  if (!open) $('#ai-text').focus();
+});
+
+function genSql(q){
+  if (/订单|金额|成交|order/.test(q)) return `-- 统计 2026 年 9 月每个用户的订单总额 TOP 20
+SELECT u.id,
+       u.name              AS user_name,
+       COUNT(o.id)         AS order_cnt,
+       SUM(o.amount)       AS total_amount
+FROM shop.orders o
+JOIN shop.users u ON u.id = o.user_id
+WHERE o.status = 'paid'
+  AND o.created_at >= '2026-09-01'
+GROUP BY u.id, u.name
+ORDER BY total_amount DESC
+LIMIT 20;`;
+  if (/注册|新用户|最近/.test(q)) return `-- 最近 7 天新注册的用户
+SELECT id, name, email, city, created_at
+FROM shop.users
+WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+ORDER BY created_at DESC
+LIMIT 200;`;
+  if (/库存|商品|product/.test(q)) return `-- 库存不足 10 件的商品
+SELECT id, sku, name, price, stock
+FROM shop.products
+WHERE stock < 10
+ORDER BY stock ASC;`;
+  return `-- 根据你的问题生成,可按需调整
+SELECT id, name, email, city, created_at
+FROM shop.users
+WHERE status = 'active'
+ORDER BY created_at DESC
+LIMIT 100;`;
+}
+
+function aiAsk(q){
+  if (!q.trim()) return;
+  const msgs = $('#ai-msgs');
+  const um = document.createElement('div');
+  um.className = 'msg user'; um.textContent = q; msgs.appendChild(um);
+
+  const bot = document.createElement('div');
+  bot.className = 'msg bot';
+  bot.innerHTML = `<div class="who">AI 助手</div>
+    <p class="thinking">正在结合 <b>shop.users</b>、<b>shop.orders</b> 的表结构生成…</p>
+    <div class="sql-block hidden"><pre><code></code></pre>
+      <div class="sql-actions">
+        <button class="b-insert">插入到编辑器</button>
+        <button class="b-run">插入并执行</button>
+        <button class="b-copy">复制</button>
+      </div></div>`;
+  msgs.appendChild(bot); msgs.scrollTop = msgs.scrollHeight;
+
+  const sql = genSql(q);
+  const codeEl = $('code', bot), block = $('.sql-block', bot);
+  setTimeout(() => {
+    $('.thinking', bot).textContent = '已生成,方言 MySQL 8,仅 SELECT 语句:';
+    block.classList.remove('hidden');
+    let i = 0;
+    const tick = setInterval(() => {
+      i = Math.min(sql.length, i + 4);
+      codeEl.textContent = sql.slice(0, i);
+      msgs.scrollTop = msgs.scrollHeight;
+      if (i >= sql.length){ clearInterval(tick); codeEl.innerHTML = hlSql(sql); }
+    }, 12);
+  }, 650);
+}
+
+/* AI 消息区事件代理(历史会话恢复后按钮依然可用) */
+$('#ai-msgs').addEventListener('click', e => {
+  const qbtn = e.target.closest('[data-q]');
+  if (qbtn){ aiAsk(qbtn.dataset.q); return; }
+  const act = e.target.closest('.sql-actions button');
+  if (!act) return;
+  const sql = $('code', act.closest('.sql-block')).textContent;
+  if (act.classList.contains('b-insert')){ insertSql(sql); toast('已插入到 SQL 编辑器', true); }
+  else if (act.classList.contains('b-run')){ insertSql(sql); runActiveSql(); }
+  else { navigator.clipboard?.writeText(sql); toast('已复制', true); }
+});
+
+function insertSql(sql){
+  let tab = tabs.find(t => t.id === activeId && t.type === 'sql') || tabs.find(t => t.type === 'sql');
+  if (!tab) tab = addTab({ type:'sql', title:'SQL-' + (sqlSeq++), sub:'prod-mysql' });
+  activate(tab.id);
+  sqlEditors[tab.id].append(sql);
+  sqlEditors[tab.id].focus();
+}
+function runActiveSql(){
+  const t = tabs.find(t => t.id === activeId && t.type === 'sql');
+  if (t){ const ed = sqlEditors[t.id]; $('.pt-btn.run', paneHosts[t.id]).click(); }
+}
+
+$('#ai-send').addEventListener('click', () => { aiAsk($('#ai-text').value); $('#ai-text').value = ''; });
+$('#ai-text').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); aiAsk(e.target.value); e.target.value = ''; }
+});
+
+/* ════════════ 主题切换(暗/亮,偏好持久化) ════════════ */
+const THEME_ICONS = {
+  light: '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M11.5 8.5A5 5 0 015.5 2.5a5 5 0 106 6z" stroke="currentColor" stroke-width="1.3"/></svg>',
+  dark:  '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="3" stroke="currentColor" stroke-width="1.3"/><path d="M7 .8v1.5M7 11.7v1.5M.8 7h1.5M11.7 7h1.5M2.6 2.6l1 1M10.4 10.4l1 1M11.4 2.6l-1 1M3.6 10.4l-1 1" stroke="currentColor" stroke-width="1.3"/></svg>'
+};
+function applyTheme(t){
+  document.documentElement.dataset.theme = t;
+  localStorage.setItem('ds-theme', t);
+  $('#btn-theme').innerHTML = THEME_ICONS[t] + (t === 'dark' ? ' 亮色' : ' 暗色');
+}
+applyTheme(localStorage.getItem('ds-theme') || 'dark');
+$('#btn-theme').addEventListener('click', () =>
+  applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'));
+
+/* ════════════ 标注模式开关(仅评审用) ════════════ */
+function toggleAnno(){
+  const on = document.body.classList.toggle('anno');
+  $('#anno-legend').classList.toggle('hidden', !on);
+  $('#btn-anno').classList.toggle('toggled', on);
+}
+$('#btn-anno').addEventListener('click', toggleAnno);
+$('#anno-close').addEventListener('click', toggleAnno);
+
+/* ════════════ AI Provider(OpenAI 兼容,多配置单生效) ════════════ */
+const PROVIDERS = [
+  { name:'DeepSeek',     model:'deepseek-chat',      base:'https://api.deepseek.com/v1', hasKey:true,  active:true  },
+  { name:'OpenAI',       model:'gpt-4o-mini',        base:'https://api.openai.com/v1',   hasKey:true,  active:false },
+  { name:'本地 Ollama',  model:'qwen2.5-coder:7b',   base:'http://127.0.0.1:11434/v1',   hasKey:false, active:false },
+];
+let provSel = 0;
+const activeProv = () => PROVIDERS.find(p => p.active) || PROVIDERS[0];
+
+function renderProvMenu(){
+  $('#prov-menu').innerHTML = PROVIDERS.map((p, i) =>
+    `<div class="dd-item${p.active ? ' active' : ''}" data-p="${i}">${esc(p.name)}
+       <span class="sub">${esc(p.model)}</span>${p.active ? ' ✓' : ''}</div>`).join('') +
+    `<div class="dd-sep"></div><div class="dd-item" data-p="__manage">⚙ 管理 Provider…</div>`;
+}
+function renderProvItems(){
+  $('#prov-items').innerHTML = PROVIDERS.map((p, i) =>
+    `<div class="prov-item${i === provSel ? ' sel' : ''}" data-i="${i}">
+       <div class="pn">${esc(p.name)}${p.active ? '<span class="on">生效中</span>' : ''}</div>
+       <div class="pm">${esc(p.model)}</div></div>`).join('');
+}
+function renderProvForm(){
+  const p = PROVIDERS[provSel];
+  $('#pf-name').value = p.name; $('#pf-model').value = p.model;
+  $('#pf-base').value = p.base; $('#pf-key').value = '';
+  $('#pf-key').placeholder = p.hasKey ? '••••••••(已保存,留空不修改)' : '(未设置)';
+  $('#pf-msg').textContent = '';
+}
+function renderProvAll(){
+  renderProvMenu(); renderProvItems(); renderProvForm();
+  $('#prov-btn').textContent = activeProv().name + ' ▾';
+  $('#sb-ai').textContent = 'AI: ' + activeProv().name + ' ✓';
+}
+function setActiveProvider(i){
+  PROVIDERS.forEach(p => p.active = false);
+  PROVIDERS[i].active = true;
+  renderProvAll();
+  toast('已切换生效 Provider:' + PROVIDERS[i].name, true);
+}
+
+/* 下拉通用开合 */
+function ddToggle(menu){
+  const wasHidden = menu.classList.contains('hidden');
+  $$('.dd-menu').forEach(m => m.classList.add('hidden'));
+  if (wasHidden) menu.classList.remove('hidden');
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('.dd')) $$('.dd-menu').forEach(m => m.classList.add('hidden'));
+});
+$('#prov-btn').addEventListener('click', () => ddToggle($('#prov-menu')));
+$('#prov-menu').addEventListener('click', e => {
+  const item = e.target.closest('[data-p]'); if (!item) return;
+  $('#prov-menu').classList.add('hidden');
+  if (item.dataset.p === '__manage'){ openSettings(); return; }
+  setActiveProvider(+item.dataset.p);
+});
+
+/* ════════════ AI 会话历史(存 sqlite) ════════════ */
+const SESS = [
+  { id:'s1', title:'当前会话',            date:'今天' },
+  { id:'s2', title:'订单总额统计',         date:'09-15 21:02' },
+  { id:'s3', title:'库存不足商品排查',     date:'09-14 16:40' },
+];
+let curSess = 's1', sessSeq = 4;
+const sessStore = {};
+const SEED_HTML = $('#ai-msgs').innerHTML;
+const SAMPLE2_SQL = `SELECT u.id, u.name, SUM(o.amount) AS total_amount
+FROM shop.orders o JOIN shop.users u ON u.id = o.user_id
+WHERE o.status = 'paid' AND o.created_at >= '2026-09-01'
+GROUP BY u.id, u.name ORDER BY total_amount DESC LIMIT 20;`;
+const SAMPLE2_HTML =
+  `<div class="msg user">统计 9 月份每个用户的订单总额 TOP 20</div>` +
+  `<div class="msg bot"><div class="who">AI 助手</div><p>已生成,方言 MySQL 8,仅 SELECT:</p>` +
+  `<div class="sql-block"><pre><code>${hlSql(SAMPLE2_SQL)}</code></pre>` +
+  `<div class="sql-actions"><button class="b-insert">插入到编辑器</button><button class="b-run">插入并执行</button><button class="b-copy">复制</button></div></div></div>`;
+sessStore['s1'] = SEED_HTML; sessStore['s2'] = SAMPLE2_HTML; sessStore['s3'] = SEED_HTML;
+
+function renderSessMenu(){
+  $('#sess-menu').innerHTML = SESS.map(s =>
+    `<div class="dd-item${s.id === curSess ? ' active' : ''}" data-s="${s.id}">${esc(s.title)}
+       <span class="sub">${s.date}</span></div>`).join('') +
+    `<div class="dd-sep"></div><div class="dd-item" data-s="__new">＋ 新会话</div>`;
+}
+function switchSess(id){
+  sessStore[curSess] = $('#ai-msgs').innerHTML;
+  curSess = id;
+  $('#ai-msgs').innerHTML = sessStore[id] || SEED_HTML;
+  renderSessMenu();
+}
+$('#sess-btn').addEventListener('click', () => { renderSessMenu(); ddToggle($('#sess-menu')); });
+$('#sess-menu').addEventListener('click', e => {
+  const item = e.target.closest('[data-s]'); if (!item) return;
+  $('#sess-menu').classList.add('hidden');
+  if (item.dataset.s === '__new'){
+    const id = 's' + (sessSeq++);
+    SESS.unshift({ id, title:'新会话', date:'今天' });
+    sessStore[id] = SEED_HTML;
+    switchSess(id);
+    toast('已新建会话(持久化到 sqlite ai_sessions)', true);
+  } else switchSess(item.dataset.s);
+});
+
+/* ════════════ 设置弹窗(AI Provider 管理) ════════════ */
+const settingsMask = $('#settings-mask');
+function openSettings(){ renderProvItems(); renderProvForm(); settingsMask.classList.remove('hidden'); }
+$('#btn-settings').addEventListener('click', openSettings);
+$('#settings-close').addEventListener('click', () => settingsMask.classList.add('hidden'));
+settingsMask.addEventListener('click', e => { if (e.target === settingsMask) settingsMask.classList.add('hidden'); });
+$('#prov-items').addEventListener('click', e => {
+  const item = e.target.closest('[data-i]'); if (!item) return;
+  provSel = +item.dataset.i; renderProvItems(); renderProvForm();
+});
+$('#prov-add').addEventListener('click', () => {
+  PROVIDERS.push({ name:'新 Provider', model:'', base:'https://', hasKey:false, active:false });
+  provSel = PROVIDERS.length - 1; renderProvItems(); renderProvForm();
+});
+$('#pf-active').addEventListener('click', () => setActiveProvider(provSel));
+$('#pf-save').addEventListener('click', () => {
+  const p = PROVIDERS[provSel];
+  p.name = $('#pf-name').value || p.name; p.model = $('#pf-model').value;
+  p.base = $('#pf-base').value; if ($('#pf-key').value) p.hasKey = true;
+  renderProvAll();
+  toast('已保存(写入 sqlite ai_providers,api_key 加密)', true);
+});
+$('#pf-test').addEventListener('click', () => {
+  const m = $('#pf-msg'); m.className = 'test-msg'; m.textContent = '请求 GET {base_url}/models …';
+  setTimeout(() => { m.className = 'test-msg ok'; m.textContent = '✓ 连通,模型可用 (210 ms)'; }, 700);
+});
+
+renderProvAll();
+
+/* ════════════════════════ 顶栏动作 ════════════════════════ */
+let sqlSeq = 2;
+$('#btn-new-sql').addEventListener('click', () => addTab({ type:'sql', title:'SQL-' + (sqlSeq++), sub:'prod-mysql' }));
+$('#btn-run').addEventListener('click', runActiveSql);
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n'){ e.preventDefault();
+    addTab({ type:'sql', title:'SQL-' + (sqlSeq++), sub:'prod-mysql' }); }
+});
+
+/* ════════════════════════ 新建连接弹窗 ════════════════════════ */
+const CONN_FIELDS = {
+  mysql:  [['name','连接名','prod-mysql-2','full'],['host','主机','127.0.0.1'],['port','端口','3306'],
+           ['database','数据库',''],['username','用户名','root'],['password','密码','','password']],
+  pg:     [['name','连接名','','full'],['host','主机','127.0.0.1'],['port','端口','5432'],
+           ['database','数据库','postgres'],['username','用户名','postgres'],['password','密码','','password']],
+  sqlite: [['name','连接名','','full'],['path','数据库文件','D:\\data\\demo.db','full']],
+  redis:  [['name','连接名','','full'],['host','主机','127.0.0.1'],['port','端口','6379'],
+           ['password','密码','','password'],['db','DB 索引','0']],
+  mongo:  [['name','连接名','','full'],['host','主机','127.0.0.1'],['port','端口','27017'],
+           ['database','数据库',''],['username','用户名',''],['password','密码','','password']],
+};
+let modalType = 'mysql';
+
+function renderModal(){
+  $('#db-cards').innerHTML = Object.keys(CONN_FIELDS).map(t =>
+    `<div class="db-card${t === modalType ? ' sel' : ''}" data-t="${t}">${badge(t)}${ {mysql:'MySQL',pg:'PostgreSQL',sqlite:'SQLite',redis:'Redis',mongo:'MongoDB'}[t] }</div>`).join('');
+  $$('#db-cards .db-card').forEach(c => c.addEventListener('click', () => { modalType = c.dataset.t; renderModal(); }));
+  $('#conn-form').innerHTML = CONN_FIELDS[modalType].map(([k, label, ph, cls]) =>
+    `<div class="field ${cls === 'full' ? 'full' : ''}"><label>${label}</label>
+     <input data-k="${k}" placeholder="${esc(ph)}" type="${cls === 'password' ? 'password' : 'text'}"></div>`).join('');
+  $('#test-msg').textContent = ''; $('#test-msg').className = 'test-msg';
+}
+const mask = $('#modal-mask');
+const openModal = () => { mask.classList.remove('hidden'); renderModal(); };
+$('#btn-new-conn').addEventListener('click', openModal);
+$('#btn-new-conn2').addEventListener('click', openModal);
+$('#modal-close').addEventListener('click', () => mask.classList.add('hidden'));
+$('#btn-cancel').addEventListener('click', () => mask.classList.add('hidden'));
+mask.addEventListener('click', e => { if (e.target === mask) mask.classList.add('hidden'); });
+
+$('#btn-test').addEventListener('click', () => {
+  const m = $('#test-msg'); m.className = 'test-msg'; m.textContent = '连接中…';
+  setTimeout(() => { m.className = 'test-msg ok'; m.textContent = '✓ 连接成功 (18 ms)'; }, 700);
+});
+$('#btn-save').addEventListener('click', () => {
+  const vals = {};
+  $$('#conn-form input').forEach(i => vals[i.dataset.k] = i.value);
+  const name = vals.name || (vals.host ? `${modalType}-${vals.host}` : `${modalType}-${Date.now()%1000}`);
+  treeData.push({ name, type: modalType, children: [{ name:'(待加载)', icon:'folder', children:[] }] });
+  renderTree();
+  mask.classList.add('hidden');
+  toast(`已保存连接「${name}」`, true);
+});
+
+/* ════════════════════════ 初始:恢复工作区,无存档则建默认 Tab ════════════════════════ */
+if (!loadWorkspace()){
+  addTab({ type:'sql', title:'SQL-1', sub:'prod-mysql' });
+  addTab({ type:'data', title:'users', sub:'local-pg', data:{ table:'users' } });
+  addTab({ type:'redis', title:'键浏览', sub:'cache-redis' });
+  addTab({ type:'mongo', title:'events', sub:'mongo-dev', data:{ coll:'events' } });
+  activate(tabs[0].id);
+}
+</script>
+</body>
+</html>
