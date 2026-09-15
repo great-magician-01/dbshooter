@@ -1,0 +1,16 @@
+.git
+.venv
+venv
+node_modules
+frontend/node_modules
+frontend/dist
+frontend_dist
+**/__pycache__
+.pytest_cache
+*.db
+*.db-journal
+secret.key
+docs
+.github
+Dockerfile
+.dockerignore
