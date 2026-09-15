@@ -1,0 +1,44 @@
+"""测试基座:独立临时数据目录 + 固定密钥(必须在导入任何 backend.app 模块前设置)。"""
+from __future__ import annotations
+
+import os
+import sqlite3
+import tempfile
+from pathlib import Path
+
+_TMP = tempfile.mkdtemp(prefix='dbshooter-test-')
+os.environ['DBSHOOTER_DATA_DIR'] = _TMP
+os.environ['DBSHOOTER_SECRET'] = 'test-secret-key'
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture()
+def client():
+    from fastapi.testclient import TestClient
+    from backend.app.main import create_app
+    with TestClient(create_app()) as c:
+        yield c
+
+
+@pytest.fixture()
+def sqlite_db(tmp_path) -> str:
+    """建一个带样例数据的目标 SQLite 库,返回文件路径。"""
+    p = tmp_path / 'demo.db'
+    c = sqlite3.connect(p)
+    c.executescript("""
+        CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, city TEXT);
+        INSERT INTO users(name, city) VALUES ('张三','上海'),('李四','北京'),('王五','深圳');
+        CREATE VIEW v_users AS SELECT name FROM users;
+    """)
+    c.commit()
+    c.close()
+    return str(p)
+
+
+@pytest.fixture()
+def sqlite_conn_id(client, sqlite_db) -> str:
+    r = client.post('/api/connections', json={
+        'name': '测试库', 'type': 'sqlite', 'params': {'path': sqlite_db}})
+    assert r.status_code == 200, r.text
+    return r.json()['item']['id']

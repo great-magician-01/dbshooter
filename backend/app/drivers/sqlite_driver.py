@@ -1,0 +1,106 @@
+"""SQLite 驱动:零配置本地文件库,aiosqlite 异步执行。"""
+from __future__ import annotations
+
+import time
+
+import aiosqlite
+
+from .base import DriverBase, ExecResult, MetaNode, QueryError, ensure_writable, register
+from .sqlutil import split_sql
+
+
+@register
+class SqliteDriver(DriverBase):
+    kind = 'sqlite'
+    editor_mode = 'sql'
+
+    def __init__(self, cfg: dict):
+        super().__init__(cfg)
+        self.path = (cfg.get('params') or {}).get('path') or cfg.get('database') or ':memory:'
+        self.conn: aiosqlite.Connection | None = None
+
+    async def connect(self) -> None:
+        if self.conn is None:
+            self.conn = await aiosqlite.connect(self.path)
+
+    async def test(self) -> tuple[bool, str]:
+        t0 = time.monotonic()
+        await self.connect()
+        async with self.conn.execute('SELECT sqlite_version()') as cur:
+            row = await cur.fetchone()
+        return True, f'SQLite {row[0]} · {int((time.monotonic()-t0)*1000)} ms'
+
+    async def close(self) -> None:
+        if self.conn is not None:
+            await self.conn.close()
+            self.conn = None
+
+    async def metadata(self, path: str) -> list[MetaNode]:
+        await self.connect()
+        parts = [p for p in path.split('.') if p]
+        if not parts:
+            return [MetaNode(path='main', label='main', kind='database', has_children=True)]
+        if len(parts) == 1:
+            nodes = []
+            async with self.conn.execute(
+                    "SELECT name, type FROM sqlite_master WHERE type IN ('table','view')"
+                    " AND name NOT LIKE 'sqlite_%' ORDER BY type, name") as cur:
+                async for name, typ in cur:
+                    nodes.append(MetaNode(path=f'main.{name}', label=name, kind=typ,
+                                          has_children=True))
+            return nodes
+        table = parts[1]
+        cols = []
+        async with self.conn.execute(f'PRAGMA table_info("{table}")') as cur:
+            async for cid, name, ctype, notnull, dflt, pk in cur:
+                cols.append(MetaNode(path=f'{path}.{name}', label=name, kind='column',
+                                     extra={'type': ctype or '', 'pk': bool(pk),
+                                            'nullable': not notnull}))
+        return cols
+
+    async def ddl(self, tables: list[str]) -> str:
+        await self.connect()
+        out = []
+        for t in tables:
+            name = t.split('.')[-1]
+            async with self.conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE name=? AND type IN ('table','view')",
+                    (name,)) as cur:
+                row = await cur.fetchone()
+            if row and row[0]:
+                out.append(row[0] + ';')
+        return '\n\n'.join(out)
+
+    async def execute(self, stmt: str, limit: int = 500) -> list[ExecResult]:
+        await self.connect()
+        readonly = bool(self.cfg.get('readonly'))
+        results: list[ExecResult] = []
+        for single in split_sql(stmt):
+            ensure_writable(single, readonly)
+            t0 = time.monotonic()
+            try:
+                cur = await self.conn.execute(single)
+                async with cur:
+                    if cur.description:
+                        cols = [{'name': d[0], 'type': ''} for d in cur.description]
+                        fetched = await cur.fetchmany(limit + 1)
+                        results.append(ExecResult(
+                            kind='rows', columns=cols,
+                            rows=[list(r) for r in fetched[:limit]],
+                            truncated=len(fetched) > limit,
+                            elapsed_ms=int((time.monotonic() - t0) * 1000)))
+                    else:
+                        await self.conn.commit()
+                        results.append(ExecResult(
+                            kind='affected', affected=max(cur.rowcount, 0),
+                            elapsed_ms=int((time.monotonic() - t0) * 1000)))
+            except QueryError:
+                raise
+            except Exception as e:  # sqlite3.OperationalError 等
+                results.append(ExecResult(kind='error', error=str(e),
+                                          elapsed_ms=int((time.monotonic() - t0) * 1000)))
+        return results
+
+    async def cancel(self) -> None:
+        if self.conn is not None:
+            self.conn.interrupt()
