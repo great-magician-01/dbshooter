@@ -42,7 +42,8 @@ def create_app() -> FastAPI:
         async def spa_fallback(request: Request, exc):
             if not request.url.path.startswith(('/api', '/ws')) and index.exists():
                 return FileResponse(index)
-            return JSONResponse({'detail': 'Not Found'}, status_code=404)
+            # API 的 404 必须保留业务错误信息
+            return JSONResponse({'detail': getattr(exc, 'detail', 'Not Found')}, status_code=404)
 
         app.mount('/', StaticFiles(directory=config.FRONTEND_DIST, html=True), name='static')
     else:
