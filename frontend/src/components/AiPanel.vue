@@ -20,7 +20,7 @@ const msgsEl = ref<HTMLElement>()
 onMounted(() => { if (!ai.sessions.length) ai.loadSessions() })
 
 function scrollBottom() {
-  nextTick(() => { if (msgsEl.value) msgsEl.scrollTop = msgsEl.scrollHeight })
+  nextTick(() => { if (msgsEl.value) msgsEl.value.scrollTop = msgsEl.value.scrollHeight })
 }
 
 async function send() {
