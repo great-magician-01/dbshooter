@@ -12,8 +12,7 @@
     "skipLibCheck": true,
     "noEmit": true,
     "types": ["vitest/globals", "vite/client"],
-    "baseUrl": ".",
-    "paths": { "@/*": ["src/*"] }
+    "paths": { "@/*": ["./src/*"] }
   },
   "include": ["src/**/*.ts", "src/**/*.vue", "tests/**/*.ts"]
 }
