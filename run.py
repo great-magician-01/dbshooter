@@ -11,6 +11,6 @@ if __name__ == '__main__':
     uvicorn.run(
         'backend.app.main:app',
         host=os.environ.get('DBSHOOTER_HOST', '0.0.0.0'),
-        port=int(os.environ.get('DBSHOOTER_PORT', '8000')),
+        port=int(os.environ.get('DBSHOOTER_PORT', '5718')),
         reload=os.environ.get('DBSHOOTER_DEV') == '1',
     )

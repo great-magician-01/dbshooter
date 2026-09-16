@@ -17,6 +17,6 @@ COPY --from=fe /fe/dist ./frontend_dist/
 
 ENV DBSHOOTER_DATA_DIR=/data
 VOLUME /data
-EXPOSE 8000
+EXPOSE 5718
 
 CMD ["python", "run.py"]

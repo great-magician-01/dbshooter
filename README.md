@@ -52,12 +52,12 @@ Web 版多数据库管理工具(DBeaver 核心体验):多连接管理 · 多 Tab
 py -3.12 -m venv .venv          # 或 python3.12 -m venv .venv
 .venv\Scripts\activate          # Windows;Linux/macOS: source .venv/bin/activate
 pip install -r requirements-dev.txt
-python run.py                   # http://127.0.0.1:8000
+python run.py                   # http://127.0.0.1:5718
 
 # 前端(另开一个终端)
 cd frontend
 npm install
-npm run dev                     # http://127.0.0.1:5173,已代理 /api 与 /ws 到 8000
+npm run dev                     # http://127.0.0.1:5173,已代理 /api 与 /ws 到 5718
 ```
 
 开发热重载:`DBSHOOTER_DEV=1 python run.py`。
@@ -73,9 +73,9 @@ cd frontend && npm run test:run          # 前端
 
 ```bash
 docker build -t dbshooter .
-docker run -d -p 8000:8000 -v dbshooter-data:/data \
+docker run -d -p 5718:5718 -v dbshooter-data:/data \
   -e DBSHOOTER_SECRET=<随机字符串> dbshooter
-# 打开 http://localhost:8000
+# 打开 http://localhost:5718
 ```
 
 ## 环境变量
@@ -85,7 +85,7 @@ docker run -d -p 8000:8000 -v dbshooter-data:/data \
 | `DBSHOOTER_DATA_DIR` | `~/.dbshooter` | 数据目录(内置 SQLite + secret.key) |
 | `DBSHOOTER_SECRET` | 自动生成 | 加密主密钥(连接密码 / API Key) |
 | `DBSHOOTER_TOKEN` | 空 | 设置后 `/api` 需 `Authorization: Bearer`,`/ws` 需 `?token=` |
-| `DBSHOOTER_PORT` / `DBSHOOTER_HOST` | `8000` / `0.0.0.0` | 监听地址 |
+| `DBSHOOTER_PORT` / `DBSHOOTER_HOST` | `5718` / `0.0.0.0` | 监听地址 |
 
 ## CI
 
