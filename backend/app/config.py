@@ -7,13 +7,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-DATA_DIR = Path(os.environ.get('DBSHOOTER_DATA_DIR', Path.home() / '.dbshooter'))
+_ROOT = Path(__file__).resolve().parents[2]  # 项目根目录
+
+DATA_DIR = Path(os.environ.get('DBSHOOTER_DATA_DIR', _ROOT / 'data'))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = DATA_DIR / 'dbshooter.db'
 SECRET_KEY_PATH = DATA_DIR / 'secret.key'
-
-_ROOT = Path(__file__).resolve().parents[2]
 _FRONTEND_CANDIDATES = [
     os.environ.get('DBSHOOTER_FRONTEND'),
     _ROOT / 'frontend_dist',      # Docker 镜像内

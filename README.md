@@ -62,11 +62,13 @@ npm run dev                     # http://127.0.0.1:5173,已代理 /api 与 /ws �
 
 开发热重载:`DBSHOOTER_DEV=1 python run.py`。
 
-## 测试
+## 测试与类型检查
 
 ```bash
 pytest -q                                # 后端
+pyright                                  # 后端类型检查(配置见 pyrightconfig.json,须 0 error)
 cd frontend && npm run test:run          # 前端
+cd frontend && npm run typecheck         # 前端 vue-tsc
 ```
 
 ## Docker 部署(单镜像,前端由后端托管)
@@ -82,14 +84,14 @@ docker run -d -p 5718:5718 -v dbshooter-data:/data \
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `DBSHOOTER_DATA_DIR` | `~/.dbshooter` | 数据目录(内置 SQLite + secret.key) |
+| `DBSHOOTER_DATA_DIR` | `./data` | 数据目录(内置 SQLite + secret.key) |
 | `DBSHOOTER_SECRET` | 自动生成 | 加密主密钥(连接密码 / API Key) |
 | `DBSHOOTER_TOKEN` | 空 | 设置后 `/api` 需 `Authorization: Bearer`,`/ws` 需 `?token=` |
 | `DBSHOOTER_PORT` / `DBSHOOTER_HOST` | `5718` / `0.0.0.0` | 监听地址 |
 
 ## CI
 
-`.github/workflows/ci.yml`:push / PR 时并行执行 **backend**(setup-python 3.12 → pytest)与 **frontend**(npm ci → vitest → vite build)。
+`.github/workflows/ci.yml`:push / PR 时并行执行 **backend**(setup-python 3.12 → pyright + pytest)与 **frontend**(npm ci → vitest → vite build)。
 
 ## 接口约定
 

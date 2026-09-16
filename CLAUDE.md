@@ -28,11 +28,15 @@ pytest backend/tests/test_api.py::test_name -q            # 单个用例
 cd frontend && npm run test:run                           # 前端 vitest
 cd frontend && npx vitest run tests/format.test.ts        # 单个文件
 
+# 类型检查(与 VSCode Pylance 读同一份 pyrightconfig.json,须 0 error)
+pyright                                                   # 装了 requirements-dev.txt 后可用;或 npx pyright
+npx pyright backend/app/db.py                             # 单个文件
+
 # Docker
 docker build -t dbshooter .
 ```
 
-CI(`.github/workflows/ci.yml`)在 push/PR 时跑 pytest + vitest + vite build。
+CI(`.github/workflows/ci.yml`)在 push/PR 时跑 pyright + pytest + vitest + vite build。
 
 ## Backend Architecture(`backend/app/`)
 
@@ -45,8 +49,21 @@ CI(`.github/workflows/ci.yml`)在 push/PR 时跑 pytest + vitest + vite build。
 - **api/** — REST 路由 + WS。**约定:只用 GET/POST**,读 = GET,写/删/改 = POST action 路径(如 `POST /api/connections/delete`)。
 - **api/ws.py** — 单 WS 端点 `/ws`,JSON 协议:客户端发 `{"id", "type", "payload"}`,服务端推 `{"id", "event", "data"}`,按 id 多路复用。消息类型 `query.execute` / `ai.text2sql`,handler 注册在 `HANDLERS`。
 - **db.py** — 应用元数据存储(内置 SQLite):连接 / AI Provider / AI 会话 / 工作区页签 / 查询历史 / settings。**同步 sqlite3 + 全局 RLock**(元数据低频,刻意不用异步)。敏感字段(password / api_key)写入前经 `security.py` Fernet 加密。
-- **config.py** — 环境变量覆盖:`DBSHOOTER_DATA_DIR`(默认 `~/.dbshooter`)、`DBSHOOTER_SECRET`(加密主密钥)、`DBSHOOTER_TOKEN`(设置后 REST 需 Bearer、WS 需 `?token=`)、`DBSHOOTER_PORT`/`DBSHOOTER_HOST`。
+- **config.py** — 环境变量覆盖:`DBSHOOTER_DATA_DIR`(默认 `./data`)、`DBSHOOTER_SECRET`(加密主密钥)、`DBSHOOTER_TOKEN`(设置后 REST 需 Bearer、WS 需 `?token=`)、`DBSHOOTER_PORT`/`DBSHOOTER_HOST`。
 - **只读模式双保险**:AI prompt 约束 + `ensure_writable()` 语句首词拦截(`READONLY_PREFIXES`),在 driver 执行前抛 `ReadonlyViolation`。
+
+## Python 类型检查标准(pyright basic,**0 error 才算完成**)
+
+`pyrightconfig.json` 是唯一检查配置(venv 指向 `.venv`、basic 模式、include `backend` + `run.py`)。VSCode Pylance 与 CLI/CI 都读它 —— 调整检查行为只改这一个文件,不要在编辑器设置里另配。写后端代码必须遵守:
+
+1. **`T | None` 必须收窄后再用**:取属性/下标/传参前先 `if x is None: ...` / `assert x is not None`。驱动连好资源后统一 `assert self.pool is not None` / `assert self.conn is not None`(`connect()` 之后的必然不变量)。
+2. **签名禁用裸容器**:`dict` / `list` / `tuple` 单独出现在参数或返回值上会推导成 `Unknown`,必须写全:`dict[str, Any]`、`list[MetaNode]`、`tuple[Any, ...]`。行数据(库表记录)统一 `dict[str, Any]`。
+3. **返回 `| None` 的查询交给调用方判空**:`db.one()` / `db.get_connection()` 等可能落空;写入后必然存在的按 id 回读用 `db._must()`。
+4. **装饰器必须保留子类类型**:返回 cls 的装饰器用 TypeVar(`TypeVar('_T', bound=Base)`,见 `base.register`),写成 `-> type[Base]` 会抹平子类、令 isinstance 收窄失效。
+5. **协程必须 await**:pyright 报"Result of async function call is not used"几乎必是真 bug(曾因此发现 SQLite 取消查询不生效)。
+6. **三方库 stub 缺陷**才允许行级 `# pyright: ignore[规则名]`,并注明原因与移除条件(如 redis-py 8.1 的 hgetall/lrange/smembers async overload 失效)。禁止用 ignore 掩盖自己代码的类型问题。
+7. **assert 仅用于不变量与类型收窄**(项目不以 `-O` 运行),业务校验用 `raise QueryError(...)`。
+8. 副作用 import(如 drivers 注册)在 `__all__` 里登记,避免被判未使用。
 
 ## Frontend Architecture(`frontend/src/`)
 
