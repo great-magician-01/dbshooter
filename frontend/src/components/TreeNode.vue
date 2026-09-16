@@ -5,6 +5,7 @@ import AppIcon from '@/components/AppIcon.vue'
 import { useConnectionsStore } from '@/stores/connections'
 import { useWorkspaceStore } from '@/stores/workspace'
 import type { Connection, MetaNode } from '@/types'
+import { qualifiedTable } from '@/utils/ident'
 
 const props = defineProps<{
   conn: Connection
@@ -61,8 +62,10 @@ function openTab() {
   if (node.kind === 'table' || node.kind === 'view') {
     const segs = node.path.split('.')
     workspace.addTab({
-      type: 'data', title: node.label, connection_id: conn.id,
-      context: { table: segs[segs.length - 1], path: node.path },
+      type: 'data', connection_id: conn.id,
+      // PG 等带 schema 段的路径,标题展示 schema 前缀以区分同名表
+      title: segs.length >= 3 ? `${segs[segs.length - 2]}.${node.label}` : node.label,
+      context: { table: node.label, ref: qualifiedTable(conn.type, node.path), path: node.path },
     })
   } else if (node.kind === 'collection') {
     workspace.addTab({

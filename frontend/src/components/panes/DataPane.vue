@@ -15,8 +15,10 @@ const status = ref('加载中…')
 const error = ref('')
 
 const table = (props.tab.context.table as string) ?? ''
+// 带 schema 与引号的限定引用(打开页签时按驱动类型生成);旧持久化页签无此字段,回退裸表名
+const tableRef = (props.tab.context.ref as string) || table
 const stmt = () =>
-  `SELECT * FROM ${table}${filter.value.trim() ? ` WHERE ${filter.value.trim()}` : ''} LIMIT 500`
+  `SELECT * FROM ${tableRef}${filter.value.trim() ? ` WHERE ${filter.value.trim()}` : ''} LIMIT 500`
 
 async function load() {
   error.value = ''
