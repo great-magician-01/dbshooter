@@ -116,7 +116,7 @@ onMounted(async () => {
         <div class="rval-body">
           <template v-if="selected">
             <pre v-if="selected.type === 'string'" class="plan"
-                 style="background:var(--bg);border:1px solid var(--border);border-radius:6px">{{ selected.value }}</pre>
+                 style="margin:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px">{{ selected.value }}</pre>
             <ResultGrid v-else-if="selected.type === 'hash'"
                         :columns="[{ name: 'field', type: '' }, { name: 'value', type: '' }]"
                         :rows="Object.entries(selected.value)" />

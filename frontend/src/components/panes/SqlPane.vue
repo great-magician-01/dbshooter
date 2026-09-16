@@ -31,6 +31,7 @@ const planText = ref('')
 const logLines = ref<string[]>([])
 const queryId = ref<string | null>(null)
 const showConnSelect = ref(false)
+const loadingMore = ref(false)
 
 // 编辑器 / 结果区高度:分隔条可拖拽(见 .hsplit),上限随面板实际高度收
 const paneEl = ref<HTMLElement>()
@@ -135,14 +136,19 @@ async function cancel() {
   running.value = false
 }
 
-/** 大结果集:从服务端缓冲拉下一页 */
+/** 大结果集:从服务端缓冲拉下一页(由 ResultGrid 滚动到底时触发,也可点按钮) */
 async function loadMore() {
-  if (!queryId.value) return
-  const d = await get<any>(`/api/query/${queryId.value}/rows`,
-    { offset: rows.value.length, limit: 500 })
-  rows.value.push(...d.rows)
-  hasMore.value = d.has_more
-  statusText.value = `${rows.value.length} 行(已缓冲 ${d.total_buffered})${d.has_more ? ' · 还有更多' : ''}`
+  if (!queryId.value || !hasMore.value || loadingMore.value) return
+  loadingMore.value = true
+  try {
+    const d = await get<any>(`/api/query/${queryId.value}/rows`,
+      { offset: rows.value.length, limit: 500 })
+    rows.value.push(...d.rows)
+    hasMore.value = d.has_more
+    statusText.value = `${rows.value.length} 行(已缓冲 ${d.total_buffered})${d.has_more ? ' · 还有更多' : ''}`
+  } finally {
+    loadingMore.value = false
+  }
 }
 
 function escapeHtml(s: string) {
@@ -197,11 +203,13 @@ defineExpose({ run })
         <span class="rt-tab" :class="{ active: view === 'log' }" @click="view = 'log'">日志</span>
         <span class="result-status">{{ statusText }}</span>
         <button v-if="hasMore && view === 'grid'" class="pt-btn" style="margin-left:8px"
-                @click="loadMore">加载更多</button>
+                :disabled="loadingMore" @click="loadMore">
+          {{ loadingMore ? '加载中…' : '加载更多' }}
+        </button>
       </div>
       <div class="result-body">
         <template v-if="view === 'grid'">
-          <ResultGrid v-if="rows.length" :columns="columns" :rows="rows" />
+          <ResultGrid v-if="rows.length" :columns="columns" :rows="rows" @reach-end="loadMore" />
           <div v-else class="result-placeholder">执行 SQL 后在此展示结果集</div>
         </template>
         <pre v-else-if="view === 'plan'" class="plan">{{ planText }}</pre>

@@ -140,6 +140,14 @@ input, textarea, select { font:inherit; color:var(--text) }
 .result-placeholder { position:absolute; inset:0; display:grid; place-items:center;
                       color:var(--muted); font-size:12.5px }
 
+/* ResultGrid:自带滚动容器(absolute 撑满父级,父级需 position:relative + 确定高度) */
+.grid-scroll { position:absolute; inset:0; overflow:auto }
+/* 虚拟模式:固定布局 + 列宽来自 colgroup 估算,单元格截断(title 悬停看全文) */
+table.grid.virtual { table-layout:fixed }
+table.grid.virtual th, table.grid.virtual td { overflow:hidden; text-overflow:ellipsis }
+/* 虚拟模式的上下占位行:只撑高度,不要边框/内边距 */
+table.grid tr.vs-pad td { padding:0; border:none }
+
 table.grid { border-collapse:collapse; font:12px/1.5 var(--mono); min-width:100% }
 table.grid th { position:sticky; top:0; background:var(--panel2); color:var(--text2); font-weight:500;
                 text-align:left; padding:6px 12px; border-bottom:1px solid var(--border);
@@ -170,7 +178,7 @@ pre.log .ok { color:var(--green) } pre.log .err { color:var(--red) }
 .rval-head { flex:none; padding:10px 14px; border-bottom:1px solid var(--border-soft);
              display:flex; align-items:center; gap:10px; font-family:var(--mono); font-size:12.5px }
 .rval-head .meta { font-size:11.5px; color:var(--muted) }
-.rval-body { flex:1; overflow:auto; padding:12px 14px }
+.rval-body { flex:1; overflow:auto; position:relative }
 .redis-cmd { flex:none; display:flex; gap:8px; padding:8px 10px; border-bottom:1px solid var(--border-soft) }
 .redis-cmd input { flex:1; height:30px; padding:0 10px; background:var(--bg);
                    border:1px solid var(--border); border-radius:5px; font:12.5px var(--mono); outline:none }
