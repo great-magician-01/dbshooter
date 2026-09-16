@@ -97,23 +97,26 @@ dbs query <conn> --stdin                         # 从管道读:cat a.sql | dbs 
 dbs export <conn> <stmt> -o out.csv [--limit 10000]  # 大结果集走 /api/query/export 流式落盘
 dbs history [--limit 50] [--format ...]
 
-dbs ai ask <conn> <question> [--tables a,b] [--session <id>]   # WS 流式输出,结束时打印提取的 SQL
-dbs ai providers list / add / activate <id> / test
+dbs ai ask <conn> <question> [--session <id>] [--sql]   # WS 流式;缺省自动建会话(标题取问题前缀),
+                                                          # --session 复用;--sql 只输出提取的 SQL,可管道给 query --stdin
+                                                          # 注:表结构由服务端 AI 自助查表工具获取,无 --tables 参数
+dbs ai providers list / add / activate <id> / test <id>
 dbs ai sessions list                             # v1 只读浏览
 
 dbs settings get [key] / set <key> <value>       # 通用设置(主题等对 CLI 无意义的键原样透传)
 ```
 
-全局选项(每个命令可用):
+全局选项(**须写在子命令之前**,Click 组级选项的固有限制):
 
 ```
 -s, --server URL     默认 http://127.0.0.1:5718;env: DBSHOOTER_URL
 -t, --token TOKEN    env: DBSHOOTER_TOKEN(与服务端同一变量名)
     --timeout SEC    默认连接 5s / 读 60s;ai ask 读 300s
-    --format ...     全局默认输出格式
     --no-color       关闭颜色与富表格(同时尊重 NO_COLOR 环境变量)
--v, --verbose        打印请求/响应摘要,便于排查
 ```
+
+`--format table|json|csv|raw` 挂在各输出型子命令上(`dbs conn list --format json` 这种自然语序);
+默认 TTY=table、管道=csv。
 
 退出码:`0` 成功;`1` 业务失败(查询错误、测试不通过等,服务端 message 原样输出);`2` 用法错误(typer 自带);`3` 无法连接服务(提示 `dbs serve` 或检查 `--server`);`4` 未授权(401/WS 4401)。
 
@@ -126,12 +129,17 @@ dbs settings get [key] / set <key> <value>       # 通用设置(主题等对 CLI
 ```
 backend/cli/
   __init__.py
-  main.py          # typer 应用装配,子命令注册
-  client.py        # httpx.Client 封装:base_url/鉴权头/超时/错误归一化;WS 封装(websockets)
-  resolve.py       # 连接名/id 前缀 → conn_id 解析
-  output.py        # 渲染:table(rich)/ json / csv / raw;TTY 与 --no-color 判定
+  __main__.py      # python -m backend.cli
+  main.py          # typer 应用装配,全局选项 callback
+  errors.py        # CliError + 退出码 + handle_cli_error 命令装饰器
+  client.py        # ApiClient(httpx 封装:鉴权/超时/错误归一化;inner 可替换)
+  wsclient.py      # WS 同步客户端(websockets.sync),ai.text2sql 事件流
+  state.py         # 全局选项状态(ctx.obj)
+  resolve.py       # 连接名/id 前缀 → 连接记录解析
+  output.py        # 渲染:table(rich)/ json / csv / raw;TTY 与 NO_COLOR 判定
   commands/
-    conn.py  tree.py  query.py  history.py  ai.py  settings.py  misc.py
+    conn.py  meta.py(tree/ddl/key)  query.py(query/export/history)
+    ai.py    misc.py(health/serve/settings)
 ```
 
 入口两种方式同时可用:
@@ -175,19 +183,21 @@ v1 不做配置文件;若后续需要多环境,再加 `~/.dbshooter/config.toml`
 
 ## 6. 测试方案
 
-- `backend/tests/test_cli.py`:用 `httpx.ASGITransport` 把 CLI 的 client 指到内存中的 FastAPI app(复用现有 conftest 的临时数据目录),走真实路由断言输出与退出码 —— 不需要起真实端口;
-- WS 部分用 `fastapi.testclient` 的 websocket 或单独起 uvicorn 子进程做一到两个冒烟用例;
-- 覆盖:连接解析(名/id/前缀/歧义)、query 四种 format、export 写盘、401/连不上的退出码、ai ask 事件流(mock provider 或直接断言错误路径);
+- `backend/tests/test_cli.py`:**FastAPI TestClient 直插 `ApiClient`**(`ApiClient(inner)` 的 inner 就是 httpx.Client,TestClient 是其子类),monkeypatch `cli.state.make_client` 后所有命令走真实路由断言输出与退出码 —— 不需要起真实端口;
+- WS 部分:`stream_ai_events` 作为函数级替换点打桩,断言事件流渲染逻辑;服务端 WS 行为由 test_ws.py 覆盖;
+- 覆盖:连接解析(名/id/前缀/歧义)、query 四种 format、export 写盘、stdin/-f、只读拦截透出、ai ask 事件流、settings 读写;
 - CI 现有 job 里加跑同一 pytest 即可,无新流水线。
 
-## 7. 里程碑
+注意:元数据 SQLite 在测试会话内共享,用例里连接名必须带随机后缀,避免跨用例撞名。
 
-| 阶段 | 内容 | 验收 |
+## 7. 里程碑(已按此实施)
+
+| 阶段 | 内容 | 状态 |
 |---|---|---|
-| M1 | pyproject + client/output/resolve 骨架 + `health`/`conn` 全组 + `tree`/`ddl`/`key` | pytest 通过,`dbs conn list` 可用 |
-| M2 | `query`(四种格式/stdin/-f)+ `export` + `history` | 管道场景闭环:`dbs query ... --format csv | ...` |
-| M3 | `ai ask`(WS 流式)+ providers/sessions 只读命令 | 终端流式输出并落会话消息 |
-| M4 | `serve`、补全安装提示、README/文档、Docker 镜像内验证 | `docker exec` 可执行 dbs |
+| M1 | pyproject + client/output/resolve 骨架 + `health`/`conn` 全组 + `tree`/`ddl`/`key` | ✅ |
+| M2 | `query`(四种格式/stdin/-f)+ `export` + `history` | ✅ |
+| M3 | `ai ask`(WS 流式 + `--sql` 管道)+ providers/sessions 命令 | ✅ |
+| M4 | `serve`、README、方案文档同步 | ✅ |
 
 ## 8. 边界与风险
 

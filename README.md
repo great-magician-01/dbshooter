@@ -26,6 +26,7 @@ Web 版多数据库管理工具(DBeaver 核心体验):多连接管理 · 多 Tab
 
 ```
 ├── run.py                  # 服务入口(python run.py)
+├── pyproject.toml          # pip install . 后获得 dbs 命令
 ├── requirements.txt        # 后端依赖(dev 见 requirements-dev.txt)
 ├── pytest.ini
 ├── Dockerfile              # 单镜像:多阶段构建
@@ -38,7 +39,8 @@ Web 版多数据库管理工具(DBeaver 核心体验):多连接管理 · 多 Tab
 │   │   ├── drivers/        # 驱动层:base + sqlite/mysql/pg/redis/mongo
 │   │   ├── services/       # 连接池管理 / 查询会话 / AI 服务
 │   │   └── api/            # REST 路由(仅 GET/POST)+ WebSocket
-│   └── tests/              # pytest(43 个用例)
+│   ├── cli/                # dbs 命令行客户端(REST/WS 薄客户端)
+│   └── tests/              # pytest
 ├── frontend/
 │   ├── src/                # components / stores / api / styles
 │   └── tests/              # vitest(17 个用例)
@@ -61,6 +63,25 @@ npm run dev                     # http://127.0.0.1:5173,已代理 /api 与 /ws �
 ```
 
 开发热重载:`DBSHOOTER_DEV=1 python run.py`。
+
+## 命令行(CLI)
+
+`dbs` 是现有 REST/WS 接口的薄客户端(方案见 `docs/02-CLI设计方案.md`),适合脚本与管道场景:
+
+```bash
+# 仓库内直接用(pip install . 后获得 dbs 命令;Docker 镜像内用 docker exec <c> python -m backend.cli)
+python -m backend.cli health
+python -m backend.cli conn add --name 本地 --type sqlite --param path=/tmp/a.db
+python -m backend.cli tree 本地 --depth 2
+python -m backend.cli query 本地 "select * from users"            # TTY 表格;管道默认 CSV
+python -m backend.cli query 本地 --stdin < a.sql
+python -m backend.cli export 本地 "select * from big" -o big.csv  # 大结果集流式落盘
+python -m backend.cli ai ask 本地 "统计每个城市的用户数"
+python -m backend.cli ai ask 本地 "..." --sql | python -m backend.cli query 本地 --stdin
+```
+
+全局选项(写在子命令之前):`-s/--server`(env `DBSHOOTER_URL`)、`-t/--token`(env `DBSHOOTER_TOKEN`)、`--timeout`、`--no-color`。
+退出码:`0` 成功 / `1` 业务失败 / `2` 用法错误 / `3` 连不上服务 / `4` 未授权。
 
 ## 测试与类型检查
 

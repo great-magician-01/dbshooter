@@ -33,7 +33,9 @@ def _global(ctx: typer.Context,
 
 app.add_typer(conn.app, name='conn')
 app.add_typer(ai.app, name='ai')
+app.add_typer(misc.settings_app, name='settings')
 app.command('health')(misc.health)
+app.command('serve')(misc.serve)
 app.command('tree')(meta.tree)
 app.command('ddl')(meta.ddl)
 app.command('key')(meta.key)

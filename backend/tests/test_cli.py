@@ -295,3 +295,24 @@ def test_ai_providers_test_fails_gracefully(cli):
     r = cli.invoke(app, ['ai', 'providers', 'test', pid[:8]])
     assert r.exit_code == 1
     assert '连接失败' in r.output
+
+
+# ── M4: settings / serve ──
+
+def test_settings_roundtrip(cli):
+    import uuid
+    k = f'cli-key-{uuid.uuid4().hex[:6]}'
+    r = cli.invoke(app, ['settings', 'set', k, 'v1'])
+    assert r.exit_code == 0, r.output
+    r = cli.invoke(app, ['settings', 'get', k])
+    assert r.exit_code == 0 and r.output.strip() == 'v1'
+    r = cli.invoke(app, ['settings', 'get', '--format', 'json'])
+    assert r.exit_code == 0 and k in r.output
+    r = cli.invoke(app, ['settings', 'get', '不存在的键'])
+    assert r.exit_code == 1
+
+
+def test_serve_registered(cli):
+    """serve 是阻塞命令不进真跑,只验证已注册进帮助。"""
+    r = cli.invoke(app, ['--help'])
+    assert 'serve' in r.output
