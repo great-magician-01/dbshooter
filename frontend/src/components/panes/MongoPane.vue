@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 
 import { post } from '@/api/http'
+import AppIcon from '@/components/AppIcon.vue'
 import CodeEditor from '@/components/CodeEditor.vue'
 import type { Tab } from '@/types'
 
@@ -41,7 +42,7 @@ async function run() {
   <section class="pane">
     <div class="pane-toolbar">
       <button class="pt-btn run" :disabled="running" @click="run">
-        {{ running ? '查询中…' : '▶ 执行' }} <span style="opacity:.6;font-size:11px">Ctrl+Enter</span>
+        <AppIcon v-if="!running" name="play" :size="10" /> {{ running ? '查询中…' : '执行' }} <span style="opacity:.6;font-size:11px">Ctrl+Enter</span>
       </button>
       <div class="pt-conn">集合 <b style="color:var(--text);font-family:var(--mono)">{{ tab.context?.collection ?? '(未选)' }}</b>
         <span style="color:var(--muted)">· 表格视图二期提供</span>

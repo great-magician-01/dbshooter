@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 
+import AppIcon from '@/components/AppIcon.vue'
 import { useConnectionsStore } from '@/stores/connections'
 import { useUiStore } from '@/stores/ui'
 import { toast } from '@/utils/toast'
@@ -78,9 +79,9 @@ async function test() {
   testMsg.value = null
   try {
     const r = await conns.test({ config: buildPayload() })
-    testMsg.value = { ok: r.ok, text: r.ok ? `✓ ${r.message}` : `✗ ${r.message}` }
+    testMsg.value = { ok: r.ok, text: r.message }
   } catch (e: any) {
-    testMsg.value = { ok: false, text: `✗ ${e.message}` }
+    testMsg.value = { ok: false, text: e.message }
   } finally {
     testing.value = false
   }
@@ -101,7 +102,7 @@ async function save() {
   <div class="modal-mask" @click.self="ui.connDialogVisible = false">
     <div class="modal">
       <div class="modal-head">{{ form.id ? '编辑连接' : '新建数据库连接' }}
-        <button class="icon-btn" @click="ui.connDialogVisible = false">✕</button>
+        <button class="icon-btn" @click="ui.connDialogVisible = false"><AppIcon name="close" :size="12" /></button>
       </div>
       <div class="modal-body">
         <div class="db-cards">
@@ -130,7 +131,9 @@ async function save() {
       </div>
       <div class="modal-foot">
         <button class="btn" :disabled="testing" @click="test">{{ testing ? '连接中…' : '测试连接' }}</button>
-        <span class="test-msg" :class="testMsg?.ok ? 'ok' : 'err'">{{ testMsg?.text }}</span>
+        <span v-if="testMsg" class="test-msg" :class="testMsg.ok ? 'ok' : 'err'">
+          <AppIcon :name="testMsg.ok ? 'check' : 'close'" :size="11" /> {{ testMsg.text }}
+        </span>
         <span class="sp" />
         <button class="btn" @click="ui.connDialogVisible = false">取消</button>
         <button class="btn primary" @click="save">保存</button>

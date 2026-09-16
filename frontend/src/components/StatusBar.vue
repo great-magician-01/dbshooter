@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import AppIcon from '@/components/AppIcon.vue'
 import { useAiStore } from '@/stores/ai'
 import { useConnectionsStore } from '@/stores/connections'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -22,6 +23,7 @@ const provider = computed(() => ai.activeProvider)
     <span v-if="activeTab">{{ activeTab.title }}</span>
     <span class="sp" />
     <span v-if="workspace.lastRun">{{ workspace.lastRun.rows }} 行 · {{ formatMs(workspace.lastRun.ms) }}</span>
-    <span>AI: {{ provider ? provider.name + ' ✓' : '未配置' }}</span>
+    <span v-if="provider" class="ai-ok">AI: {{ provider.name }} <AppIcon name="check" :size="11" /></span>
+    <span v-else>AI: 未配置</span>
   </footer>
 </template>
