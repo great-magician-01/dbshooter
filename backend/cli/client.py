@@ -70,10 +70,18 @@ class ApiClient:
         return _UNREACHABLE_HINT.format(base=str(self._inner.base_url).rstrip('/'))
 
 
+def resolve_base(server: str | None) -> str:
+    """flag > 环境变量 > 默认值。"""
+    return (server or os.environ.get('DBSHOOTER_URL') or DEFAULT_SERVER).rstrip('/')
+
+
+def resolve_token(token: str | None) -> str | None:
+    return token if token is not None else (os.environ.get('DBSHOOTER_TOKEN') or None)
+
+
 def make_client(server: str | None, token: str | None, timeout: float) -> ApiClient:
-    """按 flag > 环境变量 > 默认值 解析服务地址与令牌。"""
-    base = (server or os.environ.get('DBSHOOTER_URL') or DEFAULT_SERVER).rstrip('/')
-    tok = token if token is not None else (os.environ.get('DBSHOOTER_TOKEN') or None)
+    base = resolve_base(server)
+    tok = resolve_token(token)
     headers = {'Authorization': f'Bearer {tok}'} if tok else {}
     return ApiClient(httpx.Client(base_url=base, headers=headers,
                                   timeout=httpx.Timeout(timeout, connect=5.0)))

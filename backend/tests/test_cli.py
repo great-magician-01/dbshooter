@@ -212,3 +212,86 @@ def test_history(cli, sqlite_conn_id):
     import json
     items = json.loads(r.output)
     assert any(h['stmt'] == 'select 1' and h['status'] == 'done' for h in items)
+
+
+# ── M3: ai ──
+
+def test_ws_url():
+    from backend.cli.wsclient import ws_url
+    assert ws_url('http://127.0.0.1:5718', None) == 'ws://127.0.0.1:5718/ws'
+    assert ws_url('https://example.com/', 'tk') == 'wss://example.com/ws?token=tk'
+
+
+def _fake_ai_events(events):
+    """生成 stream_ai_events 桩:events 为 (event, data) 列表。"""
+    def fake(url, payload, timeout):
+        yield from events
+    return fake
+
+
+def test_ai_ask_streams(cli, sqlite_conn_id, monkeypatch):
+    import backend.cli.commands.ai as ai_cmd
+    monkeypatch.setattr(ai_cmd, 'stream_ai_events', _fake_ai_events([
+        ('ai.started', {}),
+        ('ai.tool', {'name': 'list_tables', 'args': '{}', 'status': 'done', 'summary': '3 张表'}),
+        ('ai.token', {'delta': '查询'}), ('ai.token', {'delta': '如下'}),
+        ('ai.done', {'text': '查询如下', 'sql': 'SELECT * FROM users', 'elapsed_ms': 12}),
+    ]))
+    r = cli.invoke(app, ['ai', 'ask', sqlite_conn_id, '查所有用户'])
+    assert r.exit_code == 0, r.output
+    assert '查询如下' in r.output and 'SELECT * FROM users' in r.output
+    # 自动建会话,且标题取问题前缀
+    import json
+    sessions = json.loads(cli.invoke(app, ['ai', 'sessions', 'list', '--format', 'json']).output)
+    assert any(s['title'].startswith('查所有用户') for s in sessions)
+
+
+def test_ai_ask_sql_only(cli, sqlite_conn_id, monkeypatch):
+    import backend.cli.commands.ai as ai_cmd
+    monkeypatch.setattr(ai_cmd, 'stream_ai_events', _fake_ai_events([
+        ('ai.token', {'delta': '一些解释文字'}),
+        ('ai.done', {'text': '一些解释文字', 'sql': 'SELECT 1', 'elapsed_ms': 1}),
+    ]))
+    r = cli.invoke(app, ['ai', 'ask', sqlite_conn_id, 'q', '--sql'])
+    assert r.exit_code == 0, r.output
+    assert r.output.strip() == 'SELECT 1'
+
+
+def test_ai_ask_error(cli, sqlite_conn_id, monkeypatch):
+    import backend.cli.commands.ai as ai_cmd
+    monkeypatch.setattr(ai_cmd, 'stream_ai_events', _fake_ai_events([
+        ('ai.error', {'message': '尚未配置生效的 AI Provider'}),
+    ]))
+    r = cli.invoke(app, ['ai', 'ask', sqlite_conn_id, 'q'])
+    assert r.exit_code == 1
+    assert '尚未配置' in r.output
+
+
+def test_ai_providers_crud(cli):
+    r = cli.invoke(app, ['ai', 'providers', 'add', '--name', 'DeepSeek',
+                         '--base-url', 'https://api.deepseek.com/v1', '--model', 'deepseek-chat',
+                         '--api-key', 'sk-x', '--activate'])
+    assert r.exit_code == 0, r.output
+    r = cli.invoke(app, ['ai', 'providers', 'list'])
+    assert r.exit_code == 0, r.output
+    assert 'DeepSeek' in r.output and 'deepseek-chat' in r.output
+    import json
+    items = json.loads(cli.invoke(app, ['ai', 'providers', 'list', '--format', 'json']).output)
+    pid = next(p for p in items if p['name'] == 'DeepSeek')['id']
+    assert pid  # activate 已生效(不重复断言状态字段,行为由服务端测试覆盖)
+    r = cli.invoke(app, ['ai', 'providers', 'activate', pid[:8]])
+    assert r.exit_code == 0, r.output
+
+
+def test_ai_providers_test_fails_gracefully(cli):
+    """指向不可达地址的 provider,test 命令业务失败退出码 1。"""
+    r = cli.invoke(app, ['ai', 'providers', 'add', '--name', 'bad',
+                         '--base-url', 'http://127.0.0.1:9/v1', '--model', 'm',
+                         '--api-key', 'k'])
+    assert r.exit_code == 0, r.output
+    import json
+    items = json.loads(cli.invoke(app, ['ai', 'providers', 'list', '--format', 'json']).output)
+    pid = next(p for p in items if p['name'] == 'bad')['id']
+    r = cli.invoke(app, ['ai', 'providers', 'test', pid[:8]])
+    assert r.exit_code == 1
+    assert '连接失败' in r.output
