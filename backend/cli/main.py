@@ -8,7 +8,7 @@ import os
 
 import typer
 
-from .commands import conn, meta, misc
+from .commands import conn, meta, misc, query as query_cmd
 from .state import CliState
 
 app = typer.Typer(name='dbs',
@@ -36,6 +36,9 @@ app.command('health')(misc.health)
 app.command('tree')(meta.tree)
 app.command('ddl')(meta.ddl)
 app.command('key')(meta.key)
+app.command('query')(query_cmd.query)
+app.command('export')(query_cmd.export)
+app.command('history')(query_cmd.history)
 
 
 def run() -> None:

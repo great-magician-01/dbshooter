@@ -117,3 +117,98 @@ def test_ddl(cli, sqlite_conn_id):
 def test_ddl_missing_table(cli, sqlite_conn_id):
     r = cli.invoke(app, ['ddl', sqlite_conn_id, 'nope'])
     assert r.exit_code == 1
+
+
+# ── M2: query / export / history ──
+
+def test_query_table(cli, sqlite_conn_id):
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select id, name from users order by id',
+                         '--format', 'table'])
+    assert r.exit_code == 0, r.output
+    assert '张三' in r.output and '王五' in r.output and '共 3 行' in r.output
+
+
+def test_query_json(cli, sqlite_conn_id):
+    import json
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select name from users order by id',
+                         '--format', 'json'])
+    assert r.exit_code == 0, r.output
+    results = json.loads(r.output)
+    assert results[0]['rows'][0] == ['张三']
+
+
+def test_query_csv_and_raw(cli, sqlite_conn_id):
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select name from users order by id',
+                         '--format', 'csv'])
+    assert r.exit_code == 0, r.output
+    assert r.output.splitlines()[0] == 'name'
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select city from users where id=1',
+                         '--format', 'raw'])
+    assert r.exit_code == 0, r.output
+    assert r.output.strip() == '上海'
+
+
+def test_query_affected(cli, sqlite_conn_id):
+    r = cli.invoke(app, ['query', sqlite_conn_id,
+                         "insert into users(name, city) values ('赵六','杭州')",
+                         '--format', 'json'])
+    assert r.exit_code == 0, r.output
+    assert '"affected": 1' in r.output
+
+
+def test_query_error_exit1(cli, sqlite_conn_id):
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select * from nope'])
+    assert r.exit_code == 1
+    assert 'nope' in r.output
+
+
+def test_query_readonly_blocked(cli, sqlite_db):
+    """只读拦截由服务端兜底,CLI 原样透出错误并以 1 退出。"""
+    import uuid
+    name = f'ro-{uuid.uuid4().hex[:6]}'   # test_api.py 也建过名为 ro 的连接,避开
+    r = cli.invoke(app, ['conn', 'add', '--name', name, '--type', 'sqlite', '--readonly',
+                         '--param', f'path={sqlite_db}'])
+    assert r.exit_code == 0, r.output
+    r = cli.invoke(app, ['query', name, "insert into users(name) values ('x')"])
+    assert r.exit_code == 1
+    assert '只读' in r.output
+
+
+def test_query_from_file_and_stdin(cli, sqlite_conn_id, tmp_path):
+    f = tmp_path / 'q.sql'
+    f.write_text('select count(*) as n from users', encoding='utf-8')
+    r = cli.invoke(app, ['query', sqlite_conn_id, '-f', str(f), '--format', 'raw'])
+    assert r.exit_code == 0, r.output
+    assert r.output.strip() == '3'
+    r = cli.invoke(app, ['query', sqlite_conn_id, '--stdin', '--format', 'raw'],
+                   input='select count(*) from v_users')
+    assert r.exit_code == 0, r.output
+    assert r.output.strip() == '3'
+
+
+def test_query_out_csv(cli, sqlite_conn_id, tmp_path):
+    out = tmp_path / 'o.csv'
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select * from users order by id',
+                         '-o', str(out)])
+    assert r.exit_code == 0, r.output
+    text = out.read_text(encoding='utf-8-sig')
+    assert text.splitlines()[0] == 'id,name,city' and '张三' in text
+
+
+def test_export(cli, sqlite_conn_id, tmp_path):
+    out = tmp_path / 'big.csv'
+    r = cli.invoke(app, ['export', sqlite_conn_id, 'select * from users', '-o', str(out)])
+    assert r.exit_code == 0, r.output
+    text = out.read_text(encoding='utf-8-sig')
+    assert text.splitlines()[0] == 'id,name,city'
+    assert len(text.splitlines()) == 4
+
+
+def test_history(cli, sqlite_conn_id):
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select 1'])
+    assert r.exit_code == 0, r.output
+    r = cli.invoke(app, ['history', '--format', 'json'])
+    assert r.exit_code == 0, r.output
+    import json
+    items = json.loads(r.output)
+    assert any(h['stmt'] == 'select 1' and h['status'] == 'done' for h in items)
