@@ -82,6 +82,14 @@ class DriverBase(abc.ABC):
         """text2sql 上下文:表结构 DDL(SQL 类驱动实现)。"""
         return ''
 
+    async def ai_namespaces(self) -> list[str]:
+        """AI 自助查表:命名空间列表(pg=schema,mysql=库,sqlite=['main'])。空=不支持。"""
+        return []
+
+    async def ai_tables(self, namespace: str | None = None) -> list[MetaNode]:
+        """AI 自助查表:列某命名空间下的表/视图节点(namespace=None 时取默认范围)。"""
+        return []
+
     async def cancel(self) -> None:
         """尽力取消;不支持的驱动由上层降级处理。"""
 

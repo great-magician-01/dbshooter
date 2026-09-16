@@ -85,12 +85,21 @@ export interface AiSession {
   updated_at?: string
 }
 
+export interface AiToolTrace {
+  call_id?: string
+  name: string
+  args?: string
+  status: 'running' | 'done' | 'error'
+  summary?: string
+}
+
 export interface AiMessage {
   id?: string
   role: 'user' | 'assistant'
-  /** assistant 为 {text, sql} JSON 解析后的结构 */
+  /** assistant 为 {text, sql, tools} JSON 解析后的结构 */
   text: string
   sql: string | null
+  tools?: AiToolTrace[]
   streaming?: boolean
   elapsed_ms?: number | null
 }

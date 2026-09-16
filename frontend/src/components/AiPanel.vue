@@ -12,7 +12,6 @@ const ui = useUiStore()
 const workspace = useWorkspaceStore()
 
 const question = ref('')
-const newTable = ref('')
 const provMenuOpen = ref(false)
 const sessMenuOpen = ref(false)
 const msgsEl = ref<HTMLElement>()
@@ -34,12 +33,6 @@ async function send() {
     scrollBottom()
     if (!ai.generating) clearInterval(timer)
   }, 200)
-}
-
-function addCtxTable() {
-  const t = newTable.value.trim()
-  if (t && !ai.ctxTables.includes(t)) ai.ctxTables.push(t)
-  newTable.value = ''
 }
 
 function targetSqlTab() {
@@ -128,24 +121,22 @@ onMounted(() => document.addEventListener('click', closeMenus))
     </div>
   </div>
 
-  <div class="ai-ctx">
-    <span class="lbl">已附加表结构:</span>
-    <span v-for="t in ai.ctxTables" :key="t" class="chip">
-      {{ t }} <i title="移除" @click="ai.ctxTables.splice(ai.ctxTables.indexOf(t), 1)"><AppIcon name="close" :size="10" /></i>
-    </span>
-    <input v-model="newTable" class="chip add" style="width:110px;outline:none"
-           placeholder="表名,回车添加" @keyup.enter="addCtxTable">
-  </div>
-
   <div ref="msgsEl" class="ai-msgs">
     <div v-if="!ai.messages.length" class="ai-empty">
       用自然语言描述要查的数据<br>
+      AI 可自助查看当前连接的库表结构<br>
       生成的 SQL 会先放入编辑器,由你确认后执行
     </div>
     <template v-for="(m, i) in ai.messages" :key="i">
       <div v-if="m.role === 'user'" class="msg user">{{ m.text }}</div>
       <div v-else class="msg bot">
         <div class="who">AI 助手{{ m.streaming ? ' · 生成中…' : '' }}</div>
+        <div v-if="m.tools?.length" class="tool-trace">
+          <span v-for="(t, ti) in m.tools" :key="t.call_id || ti" class="tool-item" :class="t.status"
+                :title="t.args">
+            <AppIcon name="table" :size="11" />{{ t.summary || t.name }}{{ t.status === 'running' ? ' …' : '' }}
+          </span>
+        </div>
         <p>{{ m.text.replace(/```(?:sql)?/gi, '').replace(/```/g, '') || (m.streaming ? '…' : '') }}</p>
         <div v-if="m.sql" class="sql-block">
           <pre><code>{{ m.sql }}</code></pre>

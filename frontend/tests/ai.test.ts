@@ -20,6 +20,7 @@ vi.mock('@/api/ws', () => ({
 }))
 
 import { get, post } from '@/api/http'
+import { ws } from '@/api/ws'
 import { useAiStore } from '@/stores/ai'
 
 beforeEach(() => {
@@ -71,5 +72,40 @@ describe('ai store · 会话', () => {
     expect(bot.text).toContain('SELECT 1;')
     expect(bot.sql).toBe('SELECT 1;')
     expect(bot.streaming).toBe(false)
+  })
+})
+
+describe('ai store · 自助查表工具轨迹', () => {
+  it('ask:ai.tool 事件按 call_id 合并,ai.done 以服务端轨迹为准', async () => {
+    const trace = [{ call_id: 'c1', name: 'describe_table', status: 'done',
+                     summary: '查看 users 表结构' }]
+    vi.mocked(ws.send).mockImplementationOnce(async (_t, _p, onEvent) => {
+      onEvent({ id: 'r', event: 'ai.tool',
+                data: { call_id: 'c1', name: 'describe_table', status: 'running' } })
+      onEvent({ id: 'r', event: 'ai.tool',
+                data: { call_id: 'c1', name: 'describe_table', status: 'done',
+                        summary: '查看 users 表结构' } })
+      onEvent({ id: 'r', event: 'ai.done', data: { text: '好', sql: 'SELECT 1', tools: trace } })
+      return 'r'
+    })
+    const ai = useAiStore()
+    await ai.ask('查用户', null)
+    const bot = ai.messages[1]
+    expect(bot.tools).toHaveLength(1)
+    expect(bot.tools![0]).toMatchObject({ call_id: 'c1', status: 'done',
+                                          summary: '查看 users 表结构' })
+  })
+
+  it('selectSession:历史消息解析 tools 字段,旧数据缺省为 undefined', async () => {
+    const ai = useAiStore()
+    vi.mocked(get).mockResolvedValueOnce({ items: [
+      { id: 'm1', role: 'assistant',
+        content: JSON.stringify({ text: '好', sql: 'SELECT 1',
+                                  tools: [{ name: 'list_tables', status: 'done' }] }) },
+      { id: 'm2', role: 'assistant', content: JSON.stringify({ text: '旧', sql: null }) },
+    ] })
+    await ai.selectSession('s1')
+    expect(ai.messages[0].tools?.[0].name).toBe('list_tables')
+    expect(ai.messages[1].tools).toBeUndefined()
   })
 })

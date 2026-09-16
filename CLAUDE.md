@@ -42,10 +42,10 @@ CI(`.github/workflows/ci.yml`)在 push/PR 时跑 pyright + pytest + vitest + vit
 
 分层:`drivers`(数据库抽象)→ `services`(运行时编排)→ `api`(REST + WS)。入口 `run.py` → `backend.app.main:app`(`create_app()` 工厂)。
 
-- **drivers/** — 可插拔驱动注册表。`base.py` 定义 `DriverBase` / `MetaNode` / `ExecResult` / `QueryError`,驱动用 `@register` 注册、`create_driver(cfg)` 实例化。**新增数据库 = 新建一个 driver 文件 + 在 `drivers/__init__.py` import**。三种操作模型而非一种:`editor_mode` 区分 `sql`(sqlite/mysql/pg)/ `json-query`(mongo)/ `command`(redis),前端据此渲染不同 Tab 面板。SQL 类驱动实现 `ddl()` 供 text2sql 注入上下文。
+- **drivers/** — 可插拔驱动注册表。`base.py` 定义 `DriverBase` / `MetaNode` / `ExecResult` / `QueryError`,驱动用 `@register` 注册、`create_driver(cfg)` 实例化。**新增数据库 = 新建一个 driver 文件 + 在 `drivers/__init__.py` import**。三种操作模型而非一种:`editor_mode` 区分 `sql`(sqlite/mysql/pg)/ `json-query`(mongo)/ `command`(redis),前端据此渲染不同 Tab 面板。SQL 类驱动实现 `ddl()`(REST 取 DDL)+ `ai_namespaces()`/`ai_tables()`(AI 自助查表的命名空间/表枚举,pg 内部拼 current_db 前缀)。
 - **services/connection_manager.py** — 单例 `manager`,按 conn_id 缓存已连接驱动(带锁防并发重复建连),配置从 `db.get_connection()` 读取。
 - **services/query_service.py** — 查询会话:WS 触发异步执行 → 内存缓冲(`BUFFER_CAP=2000` 行,TTL 600s)→ 前端按 query_id 分页拉取。取消 = 驱动 `cancel()` + 杀任务 + `manager.evict`(断连)。
-- **services/ai_service.py** — Text-to-SQL,仅依赖 OpenAI 兼容 Chat Completions 协议(流式)。生成 SQL 进编辑器由用户确认,不直接执行。
+- **services/ai_service.py** — Text-to-SQL,仅依赖 OpenAI 兼容 Chat Completions 协议(流式)。SQL 类连接走工具调用循环(`run_agent` + `stream_round`,流式累积 `delta.tool_calls`):模型用 `services/ai_tools.py` 的 `list_tables`/`describe_table` 自助查当前连接结构(PG 感知 schema、裸表名唯一匹配回退)再出 SQL,上限 `MAX_TOOL_ROUNDS=6`,provider 4xx 降级无工具旧路径;工具轨迹经 `ai.tool` 事件推给前端。生成 SQL 进编辑器由用户确认,不直接执行。
 - **api/** — REST 路由 + WS。**约定:只用 GET/POST**,读 = GET,写/删/改 = POST action 路径(如 `POST /api/connections/delete`)。
 - **api/ws.py** — 单 WS 端点 `/ws`,JSON 协议:客户端发 `{"id", "type", "payload"}`,服务端推 `{"id", "event", "data"}`,按 id 多路复用。消息类型 `query.execute` / `ai.text2sql`,handler 注册在 `HANDLERS`。
 - **db.py** — 应用元数据存储(内置 SQLite):连接 / AI Provider / AI 会话 / 工作区页签 / 查询历史 / settings。**同步 sqlite3 + 全局 RLock**(元数据低频,刻意不用异步)。敏感字段(password / api_key)写入前经 `security.py` Fernet 加密。

@@ -16,6 +16,9 @@ _TYPE_NAMES = {0: 'decimal', 1: 'tinyint', 2: 'smallint', 3: 'int', 4: 'float', 
                246: 'decimal', 249: 'tinyblob', 250: 'mediumblob', 251: 'blob',
                252: 'text', 253: 'varchar', 254: 'char'}
 
+# 元数据枚举时排除的 MySQL 系统库
+_SYSTEM_DBS = ('information_schema', 'mysql', 'performance_schema', 'sys')
+
 
 @register
 class MysqlDriver(DriverBase):
@@ -76,6 +79,18 @@ class MysqlDriver(DriverBase):
             return [MetaNode(path=f'{path}.{n}', label=n, kind='column',
                              extra={'type': dt, 'pk': key == 'PRI'})
                     for n, dt, key in await cur.fetchall()]
+
+    async def ai_namespaces(self) -> list[str]:
+        # 绑定了库的连接只看当前库;未绑定则列全部非系统库
+        bound = self.cfg.get('database')
+        if bound:
+            return [bound]
+        dbs = await self.metadata('')
+        return [n.label for n in dbs if n.label not in _SYSTEM_DBS]
+
+    async def ai_tables(self, namespace: str | None = None) -> list[MetaNode]:
+        ns = namespace or self.cfg.get('database') or ''
+        return await self.metadata(ns) if ns else []
 
     async def ddl(self, tables: list[str]) -> str:
         await self.connect()

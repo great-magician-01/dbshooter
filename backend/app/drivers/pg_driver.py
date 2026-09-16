@@ -90,6 +90,13 @@ class PgDriver(DriverBase):
             return [MetaNode(path=f"{path}.{r['column_name']}", label=r['column_name'],
                              kind='column', extra={'type': r['data_type']}) for r in rows]
 
+    async def ai_namespaces(self) -> list[str]:
+        return [n.label for n in await self.metadata(self.current_db)]
+
+    async def ai_tables(self, namespace: str | None = None) -> list[MetaNode]:
+        # metadata 路径需要 db.schema 两段,AI 侧只感知 schema 名
+        return await self.metadata(f'{self.current_db}.{namespace or "public"}')
+
     async def ddl(self, tables: list[str]) -> str:
         """PG 无 SHOW CREATE,按 information_schema 合成简化 DDL(供 AI 上下文)。"""
         await self.connect()

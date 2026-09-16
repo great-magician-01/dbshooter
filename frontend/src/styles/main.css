@@ -195,9 +195,6 @@ pre.log .ok { color:var(--green) } pre.log .err { color:var(--red) }
 #aipanel { width:360px; flex:none; display:flex; flex-direction:column; background:var(--panel); min-width:0 }
 .ai-head { flex:none; display:flex; align-items:center; gap:8px; padding:11px 14px;
            border-bottom:1px solid var(--border); font-weight:600 }
-.ai-ctx { flex:none; padding:8px 14px; border-bottom:1px solid var(--border-soft);
-          display:flex; flex-wrap:wrap; gap:6px; align-items:center }
-.ai-ctx .lbl { font-size:11.5px; color:var(--muted) }
 .chip { display:inline-flex; align-items:center; gap:5px; height:22px; padding:0 8px;
         border-radius:11px; background:var(--accent-dim); color:var(--accent);
         font:11.5px/1 var(--mono); cursor:default }
@@ -210,6 +207,12 @@ pre.log .ok { color:var(--green) } pre.log .err { color:var(--red) }
 .msg.bot { align-self:flex-start; width:100% }
 .msg.bot .who { font-size:11px; color:var(--muted); margin-bottom:4px }
 .msg.bot p { color:var(--text2); margin-bottom:8px; white-space:pre-wrap }
+/* AI 自助查表的工具调用轨迹 */
+.tool-trace { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px }
+.tool-item { display:inline-flex; align-items:center; gap:4px; padding:1px 8px; height:20px;
+             border:1px solid var(--border); border-radius:10px; font-size:11px; color:var(--muted) }
+.tool-item.running { color:var(--accent); border-style:dashed }
+.tool-item.error { color:var(--red); border-color:rgba(224,91,91,.4) }
 .sql-block { border:1px solid var(--border); border-radius:6px; overflow:hidden; background:var(--bg) }
 .sql-block pre { padding:10px 12px; font:12px/1.6 var(--mono); overflow:auto; white-space:pre-wrap }
 .sql-actions { display:flex; gap:6px; padding:6px 8px; border-top:1px solid var(--border-soft);

@@ -4,14 +4,14 @@ import { computed, ref } from 'vue'
 
 import { get, post } from '@/api/http'
 import { ws } from '@/api/ws'
-import type { AiMessage, AiProvider, AiProviderSave, AiSession } from '@/types'
+import type { AiMessage, AiProvider, AiProviderSave, AiSession, AiToolTrace } from '@/types'
 
 function parseMessage(row: any): AiMessage {
   if (row.role === 'assistant') {
     try {
       const c = JSON.parse(row.content)
       return { id: row.id, role: 'assistant', text: c.text ?? '', sql: c.sql ?? null,
-               elapsed_ms: row.elapsed_ms }
+               tools: c.tools ?? undefined, elapsed_ms: row.elapsed_ms }
     } catch { /* 历史脏数据按纯文本展示 */ }
   }
   return { id: row.id, role: row.role, text: row.content, sql: null }
@@ -22,8 +22,6 @@ export const useAiStore = defineStore('ai', () => {
   const sessions = ref<AiSession[]>([])
   const currentSessionId = ref<string | null>(null)
   const messages = ref<AiMessage[]>([])
-  /** text2sql 上下文表(由 AI 面板选择) */
-  const ctxTables = ref<string[]>([])
   const generating = ref(false)
 
   const activeProvider = computed(() => providers.value.find(p => p.is_active) ?? null)
@@ -85,10 +83,11 @@ export const useAiStore = defineStore('ai', () => {
     }
   }
 
-  /** text2sql:WS 流式;connId 用于取 schema 上下文 */
+  /** text2sql:WS 流式;connId 用于取 schema 上下文(缺省回退到会话绑定的连接) */
   async function ask(question: string, connId: string | null) {
     if (!currentSessionId.value) await newSession(connId)
     const sid = currentSessionId.value!
+    const effConnId = connId ?? sessions.value.find(s => s.id === sid)?.connection_id ?? null
     if (messages.value.length === 0) {
       // 首条问题自动生成会话标题
       const title = question.slice(0, 24)
@@ -102,11 +101,19 @@ export const useAiStore = defineStore('ai', () => {
     generating.value = true
 
     await ws.send('ai.text2sql',
-      { session_id: sid, conn_id: connId, question, tables: ctxTables.value },
+      { session_id: sid, conn_id: effConnId, question },
       (ev) => {
         if (ev.event === 'ai.token') assistant.text += ev.data.delta
-        else if (ev.event === 'ai.done') {
+        else if (ev.event === 'ai.tool') {
+          // 工具轨迹按 call_id 合并(running 占位 → done/error 更新)
+          assistant.tools ??= []
+          const d = ev.data as AiToolTrace
+          const idx = assistant.tools.findIndex(t => t.call_id && t.call_id === d.call_id)
+          if (idx >= 0) assistant.tools[idx] = { ...assistant.tools[idx], ...d }
+          else assistant.tools.push(d)
+        } else if (ev.event === 'ai.done') {
           assistant.sql = ev.data.sql
+          if (ev.data.tools) assistant.tools = ev.data.tools   // 以服务端轨迹为准
           assistant.streaming = false
           assistant.elapsed_ms = ev.data.elapsed_ms
           generating.value = false
@@ -120,7 +127,7 @@ export const useAiStore = defineStore('ai', () => {
       })
   }
 
-  return { providers, activeProvider, sessions, currentSessionId, messages, ctxTables,
+  return { providers, activeProvider, sessions, currentSessionId, messages,
            generating, loadProviders, saveProvider, deleteProvider, activateProvider,
            testProvider, loadSessions, newSession, selectSession, deleteSession, ask }
 })

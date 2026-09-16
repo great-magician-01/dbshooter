@@ -115,3 +115,74 @@ def test_ws_ai_without_provider(client, sqlite_conn_id):
         events = _collect(ws, {'ai.done', 'ai.error'})
     assert events[-1]['event'] == 'ai.error'
     assert 'Provider' in events[-1]['data']['message']
+
+
+def _mk_provider(client) -> str:
+    p = client.post('/api/ai/providers', json={
+        'name': 'mock', 'base_url': 'http://mock/v1', 'model': 'm'}).json()['item']
+    client.post('/api/ai/providers/activate', json={'id': p['id']})
+    return client.post('/api/ai/sessions', json={'title': 't'}).json()['item']['id']
+
+
+def test_ws_ai_text2sql_with_tools(client, sqlite_conn_id, monkeypatch):
+    """带 conn_id 时走工具循环:模型先 describe_table(真实 sqlite 驱动),再出 SQL。"""
+    sid = _mk_provider(client)
+    rounds = [
+        ('', [ai_service.ToolCallReq('c1', 'describe_table', '{"table": "users"}')]),
+        ('查好了:\n```sql\nSELECT count(*) FROM users;\n```', []),
+    ]
+
+    async def fake_round(provider, messages, tools=None, on_token=None):
+        assert tools, '工具模式下每轮都应携带 tools'
+        text, calls = rounds.pop(0)
+        if on_token and text:
+            await on_token(text)
+        return text, calls
+
+    monkeypatch.setattr(ai_service, 'stream_round', fake_round)
+
+    with client.websocket_connect('/ws') as ws:
+        ws.send_json({'id': 'a3', 'type': 'ai.text2sql',
+                      'payload': {'session_id': sid, 'conn_id': sqlite_conn_id,
+                                  'question': '查用户数'}})
+        events = _collect(ws, {'ai.done', 'ai.error'})
+    names = [e['event'] for e in events]
+    assert names[0] == 'ai.started' and names[-1] == 'ai.done'
+    tool_evs = [e['data'] for e in events if e['event'] == 'ai.tool']
+    assert [t['status'] for t in tool_evs] == ['running', 'done']
+    assert tool_evs[1]['summary'] == '查看 users 表结构'
+    done = events[-1]['data']
+    assert done['sql'] == 'SELECT count(*) FROM users;'
+    assert done['tools'][0]['name'] == 'describe_table'
+
+    # 落库的 assistant 消息带工具轨迹
+    msgs = client.get(f'/api/ai/sessions/{sid}/messages').json()['items']
+    saved = json.loads(msgs[1]['content'])
+    assert saved['tools'][0]['call_id'] == 'c1'
+    assert 'CREATE TABLE users' not in saved['text']   # 工具结果不进正文
+
+
+def test_ws_ai_tool_error_event(client, sqlite_conn_id, monkeypatch):
+    """模型描述了不存在的表:ai.tool 终态 error,随后仍正常 ai.done。"""
+    sid = _mk_provider(client)
+    rounds = [
+        ('', [ai_service.ToolCallReq('c1', 'describe_table', '{"table": "nope"}')]),
+        ('该表不存在,请确认表名。', []),
+    ]
+
+    async def fake_round(provider, messages, tools=None, on_token=None):
+        text, calls = rounds.pop(0)
+        if on_token and text:
+            await on_token(text)
+        return text, calls
+
+    monkeypatch.setattr(ai_service, 'stream_round', fake_round)
+
+    with client.websocket_connect('/ws') as ws:
+        ws.send_json({'id': 'a4', 'type': 'ai.text2sql',
+                      'payload': {'session_id': sid, 'conn_id': sqlite_conn_id,
+                                  'question': '查 nope 表'}})
+        events = _collect(ws, {'ai.done', 'ai.error'})
+    tool_evs = [e['data'] for e in events if e['event'] == 'ai.tool']
+    assert [t['status'] for t in tool_evs] == ['running', 'error']
+    assert events[-1]['event'] == 'ai.done'

@@ -62,6 +62,13 @@ class SqliteDriver(DriverBase):
                                             'nullable': not notnull}))
         return cols
 
+    async def ai_namespaces(self) -> list[str]:
+        return ['main']
+
+    async def ai_tables(self, namespace: str | None = None) -> list[MetaNode]:
+        # SQLite 只有 main 一个命名空间
+        return await self.metadata('main')
+
     async def ddl(self, tables: list[str]) -> str:
         await self.connect()
         assert self.conn is not None
