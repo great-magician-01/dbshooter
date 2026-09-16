@@ -19,12 +19,15 @@ def test_connection_crud_and_encryption(sqlite_db):
 
     # 内部读取可解密
     full = db.get_connection(item['id'])
+    assert full is not None
     assert full['password'] == 'pw123'
 
     # 更新时密码留空 = 保持原值
     db.update_connection({'id': item['id'], 'name': 'a2', 'type': 'sqlite',
                           'params': {'path': sqlite_db}})
-    assert db.get_connection(item['id'])['password'] == 'pw123'
+    again = db.get_connection(item['id'])
+    assert again is not None
+    assert again['password'] == 'pw123'
     by_id = {r['id']: r for r in db.list_connections()}
     assert by_id[item['id']]['name'] == 'a2'
 
@@ -48,8 +51,10 @@ def test_provider_single_active():
     db.set_active_provider(b['id'])
     rows = {r['id']: r['is_active'] for r in db.list_providers() if r['id'] in (a['id'], b['id'])}
     assert rows == {a['id']: False, b['id']: True}
-    assert db.get_active_provider()['name'] == 'B'
-    assert db.get_active_provider()['api_key'] == 'k'  # 内部可读明文
+    active = db.get_active_provider()
+    assert active is not None
+    assert active['name'] == 'B'
+    assert active['api_key'] == 'k'  # 内部可读明文
     db.delete_provider(a['id'])
     db.delete_provider(b['id'])
 

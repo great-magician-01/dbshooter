@@ -117,6 +117,10 @@ input, textarea, select { font:inherit; color:var(--text) }
 .pt-conn { margin-left:auto; display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text2) }
 .pt-conn select { background:var(--bg); color:var(--text); border:1px solid var(--border);
                   border-radius:4px; height:26px; padding:0 6px; font-size:12px; outline:none }
+/* SQL 页签绑定的 schema 徽标(右键 PG schema 新建的标签页) */
+.pt-schema { display:inline-flex; align-items:center; gap:5px; height:22px; padding:0 9px;
+             border-radius:5px; background:var(--accent-dim); color:var(--accent);
+             font:11.5px/1 var(--mono); flex:none; cursor:default }
 
 .editor-wrap { flex:1; min-height:80px; display:flex; flex-direction:column; overflow:hidden }
 .cm-host { flex:1; min-height:0; overflow:hidden }
@@ -231,6 +235,16 @@ pre.log .ok { color:var(--green) } pre.log .err { color:var(--red) }
 button.prov { border:1px solid var(--border); border-radius:10px; padding:2px 8px; font-size:11px;
               color:var(--muted); cursor:pointer; font-family:var(--mono) }
 button.prov:hover { color:var(--text); border-color:var(--accent) }
+
+/* 右键菜单(树节点,跟随鼠标、Teleport 到 body) */
+.ctx-menu { position:fixed; min-width:190px; background:var(--panel2); border:1px solid var(--border);
+            border-radius:8px; box-shadow:0 10px 32px rgba(0,0,0,.35); z-index:90; padding:4px }
+.ctx-item { display:flex; align-items:center; gap:8px; width:100%; padding:7px 10px; border-radius:5px;
+            border:0; background:none; cursor:pointer; font-size:12px; color:var(--text2);
+            white-space:nowrap; text-align:left }
+.ctx-item:hover { background:var(--hover); color:var(--text) }
+.ctx-item .app-icon { color:var(--muted) }
+.ctx-item:hover .app-icon { color:var(--accent) }
 
 /* ── 状态栏 ── */
 #statusbar { height:26px; flex:none; display:flex; align-items:center; gap:14px; padding:0 12px;

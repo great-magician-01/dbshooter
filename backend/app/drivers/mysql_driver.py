@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import aiomysql
 
 from .base import DriverBase, ExecResult, MetaNode, QueryError, ensure_writable, register
-from .sqlutil import split_sql
+from .sqlutil import jsonable, split_sql
 
 # information_schema.COLUMNS.DATA_TYPE 直接可用,执行结果的 type_code → 名称简化映射
 _TYPE_NAMES = {0: 'decimal', 1: 'tinyint', 2: 'smallint', 3: 'int', 4: 'float', 5: 'double',
@@ -21,9 +22,9 @@ class MysqlDriver(DriverBase):
     kind = 'mysql'
     editor_mode = 'sql'
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict[str, Any]):
         super().__init__(cfg)
-        self.pool = None
+        self.pool: aiomysql.Pool | None = None
 
     async def connect(self) -> None:
         if self.pool is None:
@@ -38,6 +39,7 @@ class MysqlDriver(DriverBase):
     async def test(self) -> tuple[bool, str]:
         t0 = time.monotonic()
         await self.connect()
+        assert self.pool is not None  # connect() 保证已建立
         async with self.pool.acquire() as conn, conn.cursor() as cur:
             await cur.execute('SELECT VERSION()')
             (ver,) = await cur.fetchone()
@@ -51,6 +53,7 @@ class MysqlDriver(DriverBase):
 
     async def metadata(self, path: str) -> list[MetaNode]:
         await self.connect()
+        assert self.pool is not None
         parts = [p for p in path.split('.') if p]
         async with self.pool.acquire() as conn, conn.cursor() as cur:
             if not parts:
@@ -76,6 +79,7 @@ class MysqlDriver(DriverBase):
 
     async def ddl(self, tables: list[str]) -> str:
         await self.connect()
+        assert self.pool is not None
         out = []
         async with self.pool.acquire() as conn, conn.cursor() as cur:
             for t in tables:
@@ -88,8 +92,11 @@ class MysqlDriver(DriverBase):
                     continue
         return '\n\n'.join(out)
 
-    async def execute(self, stmt: str, limit: int = 500) -> list[ExecResult]:
+    async def execute(self, stmt: str, limit: int = 500,
+                      schema: str | None = None) -> list[ExecResult]:
+        # schema 绑定仅 PG 支持:MySQL 的 USE 会污染连接池中被共享的连接
         await self.connect()
+        assert self.pool is not None
         readonly = bool(self.cfg.get('readonly'))
         results: list[ExecResult] = []
         async with self.pool.acquire() as conn, conn.cursor() as cur:
@@ -104,7 +111,7 @@ class MysqlDriver(DriverBase):
                         fetched = await cur.fetchmany(limit + 1)
                         results.append(ExecResult(
                             kind='rows', columns=cols,
-                            rows=[list(r) for r in fetched[:limit]],
+                            rows=[[jsonable(v) for v in r] for r in fetched[:limit]],
                             truncated=len(fetched) > limit,
                             elapsed_ms=int((time.monotonic() - t0) * 1000)))
                     else:

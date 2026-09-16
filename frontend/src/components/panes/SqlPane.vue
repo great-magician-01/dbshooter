@@ -41,9 +41,16 @@ const { size: resultsHeight, onPointerDown: resultsSplit } = useSplitter(280, {
 })
 
 const sqlConns = computed(() => conns.items.filter(c => ['sqlite', 'mysql', 'pg'].includes(c.type)))
+
+/** 页签绑定的 schema(右键 PG schema/表 新建的标签页):查询免写 schema 前缀 */
+const schema = computed(() => (props.tab.context?.schema as string | undefined) ?? null)
+
 const connId = computed({
   get: () => props.tab.connection_id ?? sqlConns.value[0]?.id ?? '',
   set: (v: string) => {
+    // 换连接后原 schema 绑定对新连接无意义,解绑
+    if (props.tab.connection_id !== v && props.tab.context?.schema)
+      delete props.tab.context.schema
     props.tab.connection_id = v
     workspace.setContent(props.tab.id, props.tab.content)   // 触发一次保存
     persist()
@@ -75,7 +82,8 @@ async function run() {
   running.value = true
   statusText.value = '执行中…'
   pushLog(escapeHtml(stmt.split('\n').find(l => l.trim()) ?? stmt))
-  await ws.send('query.execute', { conn_id: connId.value, stmt }, (ev) => {
+  await ws.send('query.execute',
+    { conn_id: connId.value, stmt, schema: schema.value ?? undefined }, (ev) => {
     const d = ev.data ?? {}
     if (ev.event === 'query.started') {
       queryId.value = d.query_id
@@ -108,7 +116,7 @@ async function showPlan() {
     const dialect = conns.items.find(c => c.id === connId.value)?.type === 'mysql'
       ? `EXPLAIN ${first}` : `EXPLAIN QUERY PLAN ${first}`
     const { results } = await post<{ results: any[] }>('/api/query/execute',
-      { conn_id: connId.value, stmt: dialect, limit: 100 })
+      { conn_id: connId.value, stmt: dialect, limit: 100, schema: schema.value ?? undefined })
     const r = results[0]
     planText.value = r?.rows?.length
       ? r.rows.map((row: any[]) => row.join('  |  ')).join('\n')
@@ -171,6 +179,10 @@ defineExpose({ run })
           <option v-for="c in sqlConns" :key="c.id" :value="c.id">{{ c.name }} / {{ c.database || c.params?.path || c.type }}</option>
         </select>
       </div>
+      <span v-if="schema" class="pt-schema"
+            title="本页签已绑定 schema:SQL 无需写 schema 前缀(后端注入 search_path)">
+        <AppIcon name="database" :size="11" /> {{ schema }}
+      </span>
     </div>
     <div class="editor-wrap">
       <CodeEditor ref="editorRef" lang="sql" :model-value="tab.content" @update:model-value="onEdit" @execute="run" />

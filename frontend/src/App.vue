@@ -3,6 +3,7 @@ import { onMounted } from 'vue'
 
 import AiPanel from '@/components/AiPanel.vue'
 import ConnectionDialog from '@/components/dialogs/ConnectionDialog.vue'
+import ContextMenu from '@/components/ContextMenu.vue'
 import SettingsDialog from '@/components/dialogs/SettingsDialog.vue'
 import ConnectionTree from '@/components/ConnectionTree.vue'
 import StatusBar from '@/components/StatusBar.vue'
@@ -47,6 +48,7 @@ onMounted(async () => {
       <aside v-if="ui.aiVisible" id="aipanel" :style="{ width: aiWidth + 'px' }"><AiPanel /></aside>
     </div>
     <StatusBar />
+    <ContextMenu />
     <ConnectionDialog v-if="ui.connDialogVisible" />
     <SettingsDialog v-if="ui.settingsVisible" />
   </div>

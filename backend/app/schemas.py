@@ -1,6 +1,8 @@
 """API 入参模型(全部走 GET/POST,写操作 POST action 风格)。"""
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -13,7 +15,7 @@ class ConnectionIn(BaseModel):
     database: str = ''
     username: str = ''
     password: str = ''             # 明文进,加密存;update 时留空 = 不修改
-    params: dict = Field(default_factory=dict)   # sqlite.path / redis.db / mongo.uri 等
+    params: dict[str, Any] = Field(default_factory=dict)   # sqlite.path / redis.db / mongo.uri 等
     readonly: bool = False
 
 
@@ -31,6 +33,8 @@ class ExecuteIn(BaseModel):
     conn_id: str
     stmt: str
     limit: int = 500
+    # 页签绑定的命名空间(目前仅 PG 生效);字段名避开 BaseModel.schema(),入参键仍为 schema
+    schema_: str | None = Field(default=None, alias='schema')
 
 
 class PageIn(BaseModel):
@@ -52,7 +56,7 @@ class TabIn(BaseModel):
     type: str                      # sql | data | redis | mongo
     title: str
     connection_id: str | None = None
-    context: dict = Field(default_factory=dict)
+    context: dict[str, Any] = Field(default_factory=dict)
     content: str = ''
     sort: int = 0
 
@@ -82,7 +86,7 @@ class SessionRenameIn(BaseModel):
 
 
 class SettingsIn(BaseModel):
-    values: dict
+    values: dict[str, Any]
 
 
 class AiAskIn(BaseModel):

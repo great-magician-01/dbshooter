@@ -10,6 +10,7 @@ import sqlite3
 import threading
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from . import config, security
 
@@ -93,17 +94,24 @@ def conn() -> sqlite3.Connection:
     return _conn
 
 
-def q(sql: str, args: tuple = ()) -> list[dict]:
+def q(sql: str, args: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
     with _lock:
         return [dict(r) for r in conn().execute(sql, args).fetchall()]
 
 
-def one(sql: str, args: tuple = ()) -> dict | None:
+def one(sql: str, args: tuple[Any, ...] = ()) -> dict[str, Any] | None:
     rows = q(sql, args)
     return rows[0] if rows else None
 
 
-def run(sql: str, args: tuple = ()) -> None:
+def _must(sql: str, args: tuple[Any, ...] = ()) -> dict[str, Any]:
+    """断言单行存在的回读:仅用于 INSERT/UPDATE 刚落库后的按 id 回读。"""
+    row = one(sql, args)
+    assert row is not None, f'写入后回读失败: {sql}'
+    return row
+
+
+def run(sql: str, args: tuple[Any, ...] = ()) -> None:
     with _lock:
         conn().execute(sql, args)
         conn().commit()
@@ -119,7 +127,7 @@ def reset_for_tests() -> None:
 
 # ──────────────────────── 连接 ────────────────────────
 
-def _conn_out(row: dict) -> dict:
+def _conn_out(row: dict[str, Any]) -> dict[str, Any]:
     """对外输出:密文不下发,只标记是否已设置。"""
     row = dict(row)
     row['has_password'] = bool(row.pop('password_enc'))
@@ -128,11 +136,11 @@ def _conn_out(row: dict) -> dict:
     return row
 
 
-def list_connections() -> list[dict]:
+def list_connections() -> list[dict[str, Any]]:
     return [_conn_out(r) for r in q('SELECT * FROM connections ORDER BY sort, created_at')]
 
 
-def get_connection(cid: str) -> dict | None:
+def get_connection(cid: str) -> dict[str, Any] | None:
     """内部使用:含解密后的密码,绝不下发前端。"""
     row = one('SELECT * FROM connections WHERE id=?', (cid,))
     if not row:
@@ -143,7 +151,7 @@ def get_connection(cid: str) -> dict | None:
     return row
 
 
-def create_connection(d: dict) -> dict:
+def create_connection(d: dict[str, Any]) -> dict[str, Any]:
     cid = d.get('id') or new_id()
     t = now()
     run('INSERT INTO connections(id,name,type,host,port,database,username,password_enc,'
@@ -152,10 +160,10 @@ def create_connection(d: dict) -> dict:
          d.get('username', ''), security.encrypt(d.get('password', '')),
          json.dumps(d.get('params') or {}), int(d.get('readonly', False)),
          d.get('sort', 0), t, t))
-    return _conn_out(one('SELECT * FROM connections WHERE id=?', (cid,)))
+    return _conn_out(_must('SELECT * FROM connections WHERE id=?', (cid,)))
 
 
-def update_connection(d: dict) -> dict | None:
+def update_connection(d: dict[str, Any]) -> dict[str, Any] | None:
     cid = d['id']
     old = one('SELECT * FROM connections WHERE id=?', (cid,))
     if not old:
@@ -167,7 +175,7 @@ def update_connection(d: dict) -> dict | None:
         (d['name'], d['type'], d.get('host', ''), d.get('port'), d.get('database', ''),
          d.get('username', ''), pwd, json.dumps(d.get('params') or {}),
          int(d.get('readonly', False)), now(), cid))
-    return _conn_out(one('SELECT * FROM connections WHERE id=?', (cid,)))
+    return _conn_out(_must('SELECT * FROM connections WHERE id=?', (cid,)))
 
 
 def delete_connection(cid: str) -> None:
@@ -176,18 +184,18 @@ def delete_connection(cid: str) -> None:
 
 # ──────────────────────── AI Provider ────────────────────────
 
-def _provider_out(row: dict) -> dict:
+def _provider_out(row: dict[str, Any]) -> dict[str, Any]:
     row = dict(row)
     row['has_api_key'] = bool(row.pop('api_key_enc'))
     row['is_active'] = bool(row['is_active'])
     return row
 
 
-def list_providers() -> list[dict]:
+def list_providers() -> list[dict[str, Any]]:
     return [_provider_out(r) for r in q('SELECT * FROM ai_providers ORDER BY created_at')]
 
 
-def get_provider(pid: str) -> dict | None:
+def get_provider(pid: str) -> dict[str, Any] | None:
     row = one('SELECT * FROM ai_providers WHERE id=?', (pid,))
     if not row:
         return None
@@ -196,12 +204,12 @@ def get_provider(pid: str) -> dict | None:
     return row
 
 
-def get_active_provider() -> dict | None:
+def get_active_provider() -> dict[str, Any] | None:
     row = one('SELECT * FROM ai_providers WHERE is_active=1')
     return get_provider(row['id']) if row else None
 
 
-def create_provider(d: dict) -> dict:
+def create_provider(d: dict[str, Any]) -> dict[str, Any]:
     pid = d.get('id') or new_id()
     t = now()
     run('INSERT INTO ai_providers(id,name,base_url,api_key_enc,model,is_active,created_at,updated_at)'
@@ -210,10 +218,10 @@ def create_provider(d: dict) -> dict:
          d['model'], int(d.get('is_active', False)), t, t))
     if d.get('is_active'):
         set_active_provider(pid)
-    return _provider_out(one('SELECT * FROM ai_providers WHERE id=?', (pid,)))
+    return _provider_out(_must('SELECT * FROM ai_providers WHERE id=?', (pid,)))
 
 
-def update_provider(d: dict) -> dict | None:
+def update_provider(d: dict[str, Any]) -> dict[str, Any] | None:
     pid = d['id']
     old = one('SELECT * FROM ai_providers WHERE id=?', (pid,))
     if not old:
@@ -221,7 +229,7 @@ def update_provider(d: dict) -> dict | None:
     key = security.encrypt(d['api_key']) if d.get('api_key') else old['api_key_enc']
     run('UPDATE ai_providers SET name=?,base_url=?,api_key_enc=?,model=?,updated_at=? WHERE id=?',
         (d['name'], d['base_url'], key, d['model'], now(), pid))
-    return _provider_out(one('SELECT * FROM ai_providers WHERE id=?', (pid,)))
+    return _provider_out(_must('SELECT * FROM ai_providers WHERE id=?', (pid,)))
 
 
 def delete_provider(pid: str) -> None:
@@ -244,16 +252,16 @@ def set_active_provider(pid: str) -> None:
 
 # ──────────────────────── AI 会话与消息 ────────────────────────
 
-def list_sessions() -> list[dict]:
+def list_sessions() -> list[dict[str, Any]]:
     return q('SELECT * FROM ai_sessions ORDER BY updated_at DESC')
 
 
-def create_session(d: dict) -> dict:
+def create_session(d: dict[str, Any]) -> dict[str, Any]:
     sid = d.get('id') or new_id()
     t = now()
     run('INSERT INTO ai_sessions(id,title,connection_id,created_at,updated_at) VALUES(?,?,?,?,?)',
         (sid, d.get('title') or '新会话', d.get('connection_id'), t, t))
-    return one('SELECT * FROM ai_sessions WHERE id=?', (sid,))
+    return _must('SELECT * FROM ai_sessions WHERE id=?', (sid,))
 
 
 def rename_session(sid: str, title: str) -> None:
@@ -266,22 +274,22 @@ def delete_session(sid: str) -> None:
 
 
 def add_message(session_id: str, role: str, content: str,
-                tokens: int | None = None, elapsed_ms: int | None = None) -> dict:
+                tokens: int | None = None, elapsed_ms: int | None = None) -> dict[str, Any]:
     mid = new_id()
     run('INSERT INTO ai_messages(id,session_id,role,content,tokens,elapsed_ms,created_at)'
         ' VALUES(?,?,?,?,?,?,?)',
         (mid, session_id, role, content, tokens, elapsed_ms, now()))
     run('UPDATE ai_sessions SET updated_at=? WHERE id=?', (now(), session_id))
-    return one('SELECT * FROM ai_messages WHERE id=?', (mid,))
+    return _must('SELECT * FROM ai_messages WHERE id=?', (mid,))
 
 
-def list_messages(session_id: str) -> list[dict]:
+def list_messages(session_id: str) -> list[dict[str, Any]]:
     return q('SELECT * FROM ai_messages WHERE session_id=? ORDER BY created_at, rowid', (session_id,))
 
 
 # ──────────────────────── 工作区页签 ────────────────────────
 
-def list_tabs() -> list[dict]:
+def list_tabs() -> list[dict[str, Any]]:
     rows = q('SELECT * FROM editor_tabs ORDER BY sort, rowid')
     for r in rows:
         r['context'] = json.loads(r.pop('context_json') or '{}')
@@ -289,7 +297,7 @@ def list_tabs() -> list[dict]:
     return rows
 
 
-def save_tab(d: dict) -> dict:
+def save_tab(d: dict[str, Any]) -> dict[str, Any]:
     """upsert:不存在则插入,存在则更新内容/标题/上下文。"""
     t = now()
     exists = one('SELECT id FROM editor_tabs WHERE id=?', (d['id'],))
@@ -303,7 +311,7 @@ def save_tab(d: dict) -> dict:
             'is_active,updated_at) VALUES(?,?,?,?,?,?,?,0,?)',
             (d['id'], d['type'], d['title'], d.get('connection_id'),
              json.dumps(d.get('context') or {}), d.get('content', ''), d.get('sort', 0), t))
-    row = one('SELECT * FROM editor_tabs WHERE id=?', (d['id'],))
+    row = _must('SELECT * FROM editor_tabs WHERE id=?', (d['id'],))
     row['context'] = json.loads(row.pop('context_json') or '{}')
     row['is_active'] = bool(row['is_active'])
     return row
@@ -338,17 +346,17 @@ def add_history(connection_id: str, stmt: str, elapsed_ms: int,
         (new_id(), connection_id, stmt[:4000], elapsed_ms, row_count, status, now()))
 
 
-def list_history(limit: int = 100) -> list[dict]:
+def list_history(limit: int = 100) -> list[dict[str, Any]]:
     return q('SELECT * FROM query_history ORDER BY executed_at DESC LIMIT ?', (limit,))
 
 
 # ──────────────────────── settings ────────────────────────
 
-def get_settings() -> dict:
+def get_settings() -> dict[str, str]:
     return {r['key']: r['value'] for r in q('SELECT key,value FROM settings')}
 
 
-def save_settings(values: dict) -> None:
+def save_settings(values: dict[str, Any]) -> None:
     with _lock:
         c = conn()
         for k, v in values.items():

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from .. import db
 from ..drivers import DriverBase, QueryError, create_driver
@@ -27,7 +28,7 @@ class ConnectionManager:
             self._drivers[conn_id] = driver
             return driver
 
-    async def test_config(self, cfg: dict) -> tuple[bool, str]:
+    async def test_config(self, cfg: dict[str, Any]) -> tuple[bool, str]:
         """用完整临时配置试连(不进入缓存)。"""
         driver = create_driver(cfg)
         try:

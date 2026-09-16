@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import shlex
 import time
+from typing import Any
 
 import redis.asyncio as aioredis
 
@@ -48,7 +49,7 @@ class RedisDriver(DriverBase):
     kind = 'redis'
     editor_mode = 'command'
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict[str, Any]):
         super().__init__(cfg)
         self._clients: dict[int, aioredis.Redis] = {}
 
@@ -81,7 +82,7 @@ class RedisDriver(DriverBase):
             db_count = 16
             try:
                 cfg = await self._client().config_get('databases')
-                db_count = int(cfg.get('databases', 16))
+                db_count = int(cfg.get('databases') or 16)
             except Exception:
                 pass  # 无 CONFIG 权限时按默认 16 个库
             return [MetaNode(path=f'db{i}', label=f'db{i}', kind='database', has_children=True)
@@ -100,6 +101,8 @@ class RedisDriver(DriverBase):
         while True:
             cursor, batch = await r.scan(cursor=cursor, match=f'{prefix}*', count=SCAN_COUNT)
             for k in batch:
+                # 标注上 key 可能是 bytes(decode_responses 未进类型系统),运行时已是 str
+                k = k.decode('utf-8', 'replace') if isinstance(k, bytes) else k
                 scanned += 1
                 rest = k[len(prefix):]
                 seg, sep, _tail = rest.partition(':')
@@ -116,20 +119,22 @@ class RedisDriver(DriverBase):
                            extra={'key': k}) for k in sorted(keys)[:MAX_GROUP_KEYS]]
         return nodes
 
-    async def key_detail(self, db: int, key: str) -> dict:
+    async def key_detail(self, db: int, key: str) -> dict[str, Any]:
         """键详情视图:TYPE + PTTL + 按类型的值(限量截取)。"""
         r = self._client(db)
         ktype = await r.type(key)
         ttl = await r.pttl(key)
         value: object
+        # 说明:hgetall/lrange/smembers 在 redis-py 8.1 的类型标注中 async overload 未生效,
+        # pyright 会误判为同步返回值;运行时确为协程,故行级 ignore(升级 redis-py 后可移除)
         if ktype == 'string':
             value = await r.get(key)
         elif ktype == 'hash':
-            value = await r.hgetall(key)
+            value = await r.hgetall(key)  # pyright: ignore[reportGeneralTypeIssues]
         elif ktype == 'list':
-            value = await r.lrange(key, 0, 199)
+            value = await r.lrange(key, 0, 199)  # pyright: ignore[reportGeneralTypeIssues]
         elif ktype == 'set':
-            value = sorted(await r.smembers(key))[:200]
+            value = sorted(await r.smembers(key))[:200]  # pyright: ignore[reportGeneralTypeIssues]
         elif ktype == 'zset':
             value = await r.zrange(key, 0, 199, withscores=True)
         elif ktype == 'none':
@@ -139,7 +144,9 @@ class RedisDriver(DriverBase):
         return {'key': key, 'type': ktype,
                 'ttl_ms': ttl, 'value': value}
 
-    async def execute(self, stmt: str, limit: int = 500) -> list[ExecResult]:
+    async def execute(self, stmt: str, limit: int = 500,
+                      schema: str | None = None) -> list[ExecResult]:
+        # NoSQL 无 schema 会话概念,忽略
         stmt = stmt.strip()
         if not stmt:
             return []

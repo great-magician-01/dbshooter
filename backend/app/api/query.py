@@ -24,7 +24,7 @@ async def execute(body: ExecuteIn):
     except QueryError as e:
         raise HTTPException(404, str(e))
     try:
-        results = await driver.execute(body.stmt, limit=body.limit)
+        results = await driver.execute(body.stmt, limit=body.limit, schema=body.schema_)
     except QueryError as e:
         db.add_history(body.conn_id, body.stmt, 0, 0, 'blocked')
         raise HTTPException(400, str(e))

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass, field
+from typing import Any, TypeVar
 
 # 只读模式下放行的语句首词
 READONLY_PREFIXES = ('select', 'with', 'explain', 'show', 'describe', 'desc', 'pragma')
@@ -25,21 +26,21 @@ class MetaNode:
     label: str
     kind: str                      # database|schema|table|view|column|keygroup|key|collection|index
     has_children: bool = False
-    extra: dict = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class ExecResult:
     kind: str = 'rows'             # rows | affected | command | documents
-    columns: list = field(default_factory=list)   # [{name, type}]
-    rows: list = field(default_factory=list)
+    columns: list[dict[str, Any]] = field(default_factory=list)   # [{name, type}]
+    rows: list[list[Any]] = field(default_factory=list)
     affected: int | None = None
     elapsed_ms: int = 0
     truncated: bool = False        # 命中 limit,还有更多行
     error: str | None = None
     raw: object = None             # redis 原始回包等
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in {
             'kind': self.kind, 'columns': self.columns, 'rows': self.rows,
             'affected': self.affected, 'elapsed_ms': self.elapsed_ms,
@@ -60,7 +61,7 @@ class DriverBase(abc.ABC):
     kind: str = ''
     editor_mode: str = 'sql'       # sql | json-query | command
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict[str, Any]):
         self.cfg = cfg
 
     @abc.abstractmethod
@@ -73,7 +74,9 @@ class DriverBase(abc.ABC):
     async def metadata(self, path: str) -> list[MetaNode]: ...
 
     @abc.abstractmethod
-    async def execute(self, stmt: str, limit: int = 500) -> list[ExecResult]: ...
+    async def execute(self, stmt: str, limit: int = 500,
+                      schema: str | None = None) -> list[ExecResult]:
+        """执行语句。schema = 页签绑定的命名空间(目前仅 PG 实现),不支持的驱动忽略。"""
 
     async def ddl(self, tables: list[str]) -> str:
         """text2sql 上下文:表结构 DDL(SQL 类驱动实现)。"""
@@ -87,13 +90,17 @@ class DriverBase(abc.ABC):
 
 REGISTRY: dict[str, type[DriverBase]] = {}
 
+_DriverT = TypeVar('_DriverT', bound=DriverBase)
 
-def register(cls: type[DriverBase]) -> type[DriverBase]:
+
+def register(cls: type[_DriverT]) -> type[_DriverT]:
+    """注册驱动。用 TypeVar 保留子类类型,否则 @register 装饰会把类抹平成
+    type[DriverBase],上游 isinstance(driver, XxxDriver) 将无法类型收窄。"""
     REGISTRY[cls.kind] = cls
     return cls
 
 
-def create_driver(cfg: dict) -> DriverBase:
+def create_driver(cfg: dict[str, Any]) -> DriverBase:
     if cfg['type'] not in REGISTRY:
         raise QueryError(f'不支持的数据库类型: {cfg["type"]}')
     return REGISTRY[cfg['type']](cfg)

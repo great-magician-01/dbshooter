@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from .. import db
 from ..drivers import ExecResult, QueryError
@@ -17,7 +17,7 @@ from .connection_manager import manager
 BUFFER_CAP = 2000          # 内存缓冲行数上限
 TTL_SECONDS = 600          # 结果缓冲保留时长
 
-Emit = Callable[[dict], Awaitable[None]]
+Emit = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 @dataclass
@@ -45,7 +45,8 @@ class QueryService:
             raise QueryError(f'查询不存在或已过期: {query_id}')
         return ctx
 
-    async def execute(self, conn_id: str, stmt: str, emit: Emit) -> str:
+    async def execute(self, conn_id: str, stmt: str, emit: Emit,
+                     schema: str | None = None) -> str:
         qid = uuid.uuid4().hex[:12]
         ctx = QueryCtx(query_id=qid, conn_id=conn_id, stmt=stmt)
         self._queries[qid] = ctx
@@ -54,7 +55,7 @@ class QueryService:
             try:
                 driver = await manager.get(conn_id)
                 await emit({'event': 'query.started', 'data': {'query_id': qid}})
-                results = await driver.execute(stmt, limit=BUFFER_CAP)
+                results = await driver.execute(stmt, limit=BUFFER_CAP, schema=schema)
                 ctx.results = results
                 err = next((r.error for r in results if r.error), None)
                 ctx.status = 'error' if err else 'done'
@@ -93,7 +94,7 @@ class QueryService:
         ctx.task = asyncio.create_task(run())
         return qid
 
-    def page(self, query_id: str, offset: int, limit: int) -> dict:
+    def page(self, query_id: str, offset: int, limit: int) -> dict[str, Any]:
         ctx = self.get(query_id)
         first = ctx.first_rows
         if not first:

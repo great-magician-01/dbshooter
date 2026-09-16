@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 import httpx
 
@@ -23,7 +23,7 @@ SYSTEM_PROMPT = """你是一个 {dialect} SQL 专家。根据用户给出的表�
 5. 默认加 LIMIT 200 防止全表扫描。"""
 
 
-def build_messages(question: str, ddl: str, dialect: str) -> list[dict]:
+def build_messages(question: str, ddl: str, dialect: str) -> list[dict[str, str]]:
     return [
         {'role': 'system', 'content': SYSTEM_PROMPT.format(dialect=dialect)},
         {'role': 'user', 'content': f'表结构:\n{ddl or "(未提供,请根据问题合理假设)"}\n\n问题:{question}'},
@@ -39,7 +39,7 @@ def extract_sql(text: str) -> str | None:
     return text.strip() if head in ('select', 'with') else None
 
 
-async def stream_chat(provider: dict, messages: list[dict]) -> AsyncIterator[str]:
+async def stream_chat(provider: dict[str, Any], messages: list[dict[str, str]]) -> AsyncIterator[str]:
     """流式调用 OpenAI 兼容接口,逐 token 产出文本。"""
     base = provider['base_url'].rstrip('/')
     headers = {'Content-Type': 'application/json'}
@@ -64,13 +64,13 @@ async def stream_chat(provider: dict, messages: list[dict]) -> AsyncIterator[str
                     yield delta
 
 
-async def complete(provider: dict, messages: list[dict]) -> str:
+async def complete(provider: dict[str, Any], messages: list[dict[str, str]]) -> str:
     """非流式便捷封装(测试与小结果用)。"""
     parts = [chunk async for chunk in stream_chat(provider, messages)]
     return ''.join(parts)
 
 
-async def test_provider(provider: dict) -> tuple[bool, str]:
+async def test_provider(provider: dict[str, Any]) -> tuple[bool, str]:
     """连通性:GET {base_url}/models(多数兼容服务支持)。"""
     base = provider['base_url'].rstrip('/')
     headers = {}

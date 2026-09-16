@@ -5,7 +5,8 @@ import AppIcon from '@/components/AppIcon.vue'
 import { useConnectionsStore } from '@/stores/connections'
 import { useWorkspaceStore } from '@/stores/workspace'
 import type { Connection, MetaNode } from '@/types'
-import { qualifiedTable } from '@/utils/ident'
+import { showContextMenu, type MenuItem } from '@/utils/contextMenu'
+import { qualifiedTable, schemaOfNode } from '@/utils/ident'
 
 const props = defineProps<{
   conn: Connection
@@ -80,11 +81,38 @@ function openTab() {
     })
   }
 }
+
+/** 右键菜单:所有数据库都支持"新建标签页";仅 PG 的 schema 可绑定 SQL 页签命名空间 */
+function onContextMenu(e: MouseEvent) {
+  const { conn, node } = props
+  const items: MenuItem[] = []
+  if (conn.type === 'mongo') {
+    items.push({ label: '新建查询标签页', icon: 'mongo', action: () =>
+      workspace.addTab({ type: 'mongo', title: conn.name, connection_id: conn.id }) })
+  } else if (conn.type === 'redis') {
+    items.push({ label: '新建键浏览标签页', icon: 'redis', action: () =>
+      workspace.addTab({ type: 'redis', title: '键浏览', connection_id: conn.id }) })
+  } else {
+    const schema = schemaOfNode(conn.type, node)
+    items.push({
+      label: schema ? `新建 SQL 标签页(${schema})` : '新建 SQL 标签页',
+      icon: 'sql',
+      action: () => workspace.addTab({
+        type: 'sql', connection_id: conn.id,
+        title: schema ? `SQL · ${schema}` : undefined,
+        // 绑定 schema 的页签:写 SQL 免 schema 前缀(后端注入 search_path)
+        context: schema ? { schema } : {},
+      }),
+    })
+  }
+  showContextMenu(e, items)
+}
 </script>
 
 <template>
   <div class="tn" :class="{ open, leaf: !node.has_children }">
-    <div v-if="!isVirtual" class="tn-row" :class="{ sel }" @click="toggle" @dblclick="openTab">
+    <div v-if="!isVirtual" class="tn-row" :class="{ sel }"
+         @click="toggle" @dblclick="openTab" @contextmenu.prevent="onContextMenu">
       <span class="tn-arrow"><AppIcon name="caret" :size="10" /></span>
       <span class="tn-ico" :class="{ pk: ico === 'pk' }"><AppIcon :name="ico" /></span>
       <span class="tn-label" :title="node.label">{{ node.label }}</span>

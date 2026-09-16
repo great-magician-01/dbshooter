@@ -13,7 +13,6 @@ import time
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .. import config, db
-from ..drivers import QueryError
 from ..services import ai_service
 from ..services.connection_manager import manager
 from ..services.query_service import query_service
@@ -25,7 +24,8 @@ async def _handle_query_execute(ws: WebSocket, req_id: str, payload: dict, send_
     async def emit(ev: dict) -> None:
         async with send_lock:
             await ws.send_json({'id': req_id, **ev})
-    await query_service.execute(payload['conn_id'], payload['stmt'], emit)
+    await query_service.execute(payload['conn_id'], payload['stmt'], emit,
+                                schema=payload.get('schema'))
 
 
 async def _handle_ai(ws: WebSocket, req_id: str, payload: dict, send_lock: asyncio.Lock):

@@ -16,3 +16,16 @@ export function qualifiedTable(connType: string, path: string): string {
   const pick = connType === 'pg' ? segs.slice(-2) : segs
   return pick.map(s => quoteIdent(connType, s)).join('.')
 }
+
+/**
+ * 树节点 → SQL 页签绑定的 schema(仅 PG 有此概念,其余数据库返回 undefined)。
+ * PG 元数据路径恒为 db.schema[.table[.column]]:两段及以上即取 schema 段;
+ * 数据库节点(单段)与连接本身不绑定。
+ */
+export function schemaOfNode(
+  connType: string, node: { path: string },
+): string | undefined {
+  if (connType !== 'pg') return undefined
+  const segs = node.path.split('.').filter(Boolean)
+  return segs.length >= 2 ? segs[1] : undefined
+}

@@ -6,6 +6,7 @@ import TreeNode from '@/components/TreeNode.vue'
 import { useConnectionsStore } from '@/stores/connections'
 import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { showContextMenu, type MenuItem } from '@/utils/contextMenu'
 
 const conns = useConnectionsStore()
 const ui = useUiStore()
@@ -34,6 +35,15 @@ function openConnTab(conn: { id: string; type: string; name: string }) {
   }
 }
 
+/** 右键连接行:新建对应类型的工作台标签页(动作同双击) */
+function onConnMenu(e: MouseEvent, conn: { id: string; type: string; name: string }) {
+  const label = conn.type === 'redis' ? '新建键浏览标签页'
+    : conn.type === 'mongo' ? '新建查询标签页' : '新建 SQL 标签页'
+  const icon = conn.type === 'redis' ? 'redis' : conn.type === 'mongo' ? 'mongo' : 'sql'
+  const items: MenuItem[] = [{ label, icon, action: () => openConnTab(conn) }]
+  showContextMenu(e, items)
+}
+
 onMounted(() => { if (!conns.items.length) conns.load() })
 </script>
 
@@ -53,7 +63,8 @@ onMounted(() => { if (!conns.items.length) conns.load() })
       <button class="btn" style="margin-top:8px" @click="ui.openConnDialog(null)">新建第一个连接</button>
     </div>
     <div v-for="conn in filtered" :key="conn.id" class="tn open">
-      <div class="tn-row" @dblclick="openConnTab(conn)">
+      <div class="tn-row" @dblclick="openConnTab(conn)"
+           @contextmenu.prevent="onConnMenu($event, conn)">
         <span class="tn-arrow" style="visibility:hidden"><AppIcon name="caret" :size="10" /></span>
         <span class="dbbadge" :style="{ background: BADGE[conn.type]?.[1] }">{{ BADGE[conn.type]?.[0] }}</span>
         <span class="tn-label" :title="conn.name">{{ conn.name }}</span>

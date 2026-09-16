@@ -1,7 +1,7 @@
 /** utils/ident 纯函数单测。 */
 import { describe, expect, it } from 'vitest'
 
-import { qualifiedTable, quoteIdent } from '@/utils/ident'
+import { qualifiedTable, quoteIdent, schemaOfNode } from '@/utils/ident'
 
 describe('quoteIdent', () => {
   it('PG/SQLite 用双引号并转义', () => {
@@ -32,5 +32,22 @@ describe('qualifiedTable', () => {
 
   it('空段被忽略', () => {
     expect(qualifiedTable('pg', 'db..users')).toBe('"db"."users"')
+  })
+})
+
+describe('schemaOfNode', () => {
+  it('PG:两段及以上路径取 schema 段(第 2 段)', () => {
+    expect(schemaOfNode('pg', { path: 'demo.sales' })).toBe('sales')
+    expect(schemaOfNode('pg', { path: 'demo.sales.users' })).toBe('sales')
+    expect(schemaOfNode('pg', { path: 'demo.sales.users.id' })).toBe('sales')
+  })
+
+  it('PG:数据库节点(单段路径)不绑定', () => {
+    expect(schemaOfNode('pg', { path: 'demo' })).toBeUndefined()
+  })
+
+  it('非 PG 数据库一律不绑定', () => {
+    expect(schemaOfNode('mysql', { path: 'shop' })).toBeUndefined()
+    expect(schemaOfNode('sqlite', { path: 'main.users' })).toBeUndefined()
   })
 })

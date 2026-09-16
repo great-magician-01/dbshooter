@@ -64,6 +64,15 @@ def test_query_execute_and_history(client, sqlite_conn_id):
     assert len(hist) >= 2 and hist[0]['stmt']
 
 
+def test_query_execute_with_schema(client, sqlite_conn_id):
+    # schema 绑定(右键 PG schema 新建的标签页)仅 PG 生效,其余驱动忽略
+    r = client.post('/api/query/execute',
+                    json={'conn_id': sqlite_conn_id, 'stmt': 'SELECT * FROM users',
+                          'schema': 'main'})
+    assert r.status_code == 200
+    assert len(r.json()['results'][0]['rows']) == 3
+
+
 def test_query_export_csv(client, sqlite_conn_id):
     r = client.post('/api/query/export',
                     json={'conn_id': sqlite_conn_id, 'stmt': 'SELECT id, name FROM users'})

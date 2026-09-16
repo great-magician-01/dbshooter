@@ -31,6 +31,34 @@ def test_ws_query_execute(client, sqlite_conn_id):
     assert page['rows'][0][1] == '李四'
 
 
+def test_ws_query_execute_with_schema(client, sqlite_conn_id):
+    # schema 由 SQL 页签上下文传入(SQLite 忽略该字段,PG 用于 SET LOCAL search_path)
+    with client.websocket_connect('/ws') as ws:
+        ws.send_json({'id': 'r3', 'type': 'query.execute',
+                      'payload': {'conn_id': sqlite_conn_id, 'stmt': 'SELECT * FROM users',
+                                  'schema': 'main'}})
+        events = _collect(ws, {'query.done', 'query.error'})
+    assert events[-1]['event'] == 'query.done'
+
+
+def test_ws_query_non_json_types(client, sqlite_conn_id):
+    # BLOB 等驱动原生类型(bytes/datetime/Decimal)经 WS 通道原生 json.dumps 推送,
+    # 必须在驱动出口 JSON 化,否则报 "Object of type bytes is not JSON serializable"
+    r = client.post('/api/query/execute', json={
+        'conn_id': sqlite_conn_id,
+        'stmt': "CREATE TABLE blobs(id INTEGER PRIMARY KEY, data BLOB);"
+                " INSERT INTO blobs(data) VALUES (x'00FF'), (CAST('文本' AS BLOB))"})
+    assert r.status_code == 200, r.text
+    with client.websocket_connect('/ws') as ws:
+        ws.send_json({'id': 'r4', 'type': 'query.execute',
+                      'payload': {'conn_id': sqlite_conn_id, 'stmt': 'SELECT * FROM blobs'}})
+        events = _collect(ws, {'query.done', 'query.error'})
+    assert events[-1]['event'] == 'query.done'
+    rows_ev = next(e for e in events if e['event'] == 'query.rows')
+    assert rows_ev['data']['rows'][0][1] == '00ff'    # 二进制 → 十六进制
+    assert rows_ev['data']['rows'][1][1] == '文本'     # 文本 BLOB → 还原
+
+
 def test_ws_query_error_event(client, sqlite_conn_id):
     with client.websocket_connect('/ws') as ws:
         ws.send_json({'id': 'r2', 'type': 'query.execute',

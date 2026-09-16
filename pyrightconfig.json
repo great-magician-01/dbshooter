@@ -1,0 +1,9 @@
+{
+  "include": ["backend", "run.py"],
+  "exclude": ["**/__pycache__", "data", "frontend", ".venv"],
+  "typeCheckingMode": "basic",
+  "pythonVersion": "3.12",
+  "venvPath": ".",
+  "venv": ".venv",
+  "reportUnusedImport": "warning"
+}

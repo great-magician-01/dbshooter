@@ -64,7 +64,7 @@ def _restore(value: Any) -> Any:
     return value
 
 
-def parse_args(text: str) -> list:
+def parse_args(text: str) -> list[Any]:
     """解析方法参数(json5,宽容未加引号的 key 与单引号)。"""
     text = text.strip()
     if not text:
@@ -73,7 +73,7 @@ def parse_args(text: str) -> list:
     return value
 
 
-def parse_shell(stmt: str) -> dict:
+def parse_shell(stmt: str) -> dict[str, Any]:
     """解析 db.coll.find({...}).sort({...}).limit(50) 形式;失败抛 QueryError。"""
     m = _HEAD_RE.match(stmt)
     if not m:
@@ -97,7 +97,7 @@ def parse_shell(stmt: str) -> dict:
     return spec
 
 
-def doc_to_jsonable(doc: dict) -> dict:
+def doc_to_jsonable(doc: dict[str, Any]) -> dict[str, Any]:
     """bson 类型 → JSON 可序列化(ObjectId/datetime 等)。"""
     return pyjson5.decode(json_util.dumps(doc))
 
@@ -107,7 +107,7 @@ class MongoDriver(DriverBase):
     kind = 'mongo'
     editor_mode = 'json-query'
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict[str, Any]):
         super().__init__(cfg)
         self.client: AsyncIOMotorClient | None = None
 
@@ -115,19 +115,21 @@ class MongoDriver(DriverBase):
         if self.client is None:
             params = self.cfg.get('params') or {}
             if params.get('uri'):
-                self.client = AsyncIOMotorClient(params['uri'], serverSelectionTimeoutMS=5000)
+                client = AsyncIOMotorClient(params['uri'], serverSelectionTimeoutMS=5000)
             else:
-                self.client = AsyncIOMotorClient(
+                client = AsyncIOMotorClient(
                     host=self.cfg.get('host') or '127.0.0.1',
                     port=int(self.cfg.get('port') or 27017),
                     username=self.cfg.get('username') or None,
                     password=self.cfg.get('password') or None,
                     serverSelectionTimeoutMS=5000)
-            await self.client.admin.command('ping')
+            await client.admin.command('ping')  # 连不上即抛错,不缓存半成品
+            self.client = client
 
     async def test(self) -> tuple[bool, str]:
         t0 = time.monotonic()
         await self.connect()
+        assert self.client is not None  # connect() 保证已建立
         info = await self.client.server_info()
         return True, f"MongoDB {info.get('version','?')} · {int((time.monotonic()-t0)*1000)} ms"
 
@@ -137,10 +139,12 @@ class MongoDriver(DriverBase):
             self.client = None
 
     def _db(self, name: str | None = None):
+        assert self.client is not None  # 调用前需 await connect()
         return self.client[name or self.cfg.get('database') or 'test']
 
     async def metadata(self, path: str) -> list[MetaNode]:
         await self.connect()
+        assert self.client is not None
         parts = [p for p in path.split('.') if p]
         if not parts:
             names = await self.client.list_database_names()
@@ -156,7 +160,9 @@ class MongoDriver(DriverBase):
             nodes.append(MetaNode(path=f'{path}.{idx}', label=idx, kind='index'))
         return nodes
 
-    async def execute(self, stmt: str, limit: int = 500) -> list[ExecResult]:
+    async def execute(self, stmt: str, limit: int = 500,
+                      schema: str | None = None) -> list[ExecResult]:
+        # NoSQL 无 schema 会话概念,忽略
         await self.connect()
         spec = parse_shell(stmt)
         if self.cfg.get('readonly') and spec['method'] not in ('find', 'countDocuments'):
