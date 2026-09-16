@@ -12,6 +12,7 @@ import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
 import type { Column, Tab } from '@/types'
 import { formatMs, formatSql } from '@/utils/format'
+import { useSplitter } from '@/utils/split'
 
 const props = defineProps<{ tab: Tab }>()
 
@@ -30,6 +31,14 @@ const planText = ref('')
 const logLines = ref<string[]>([])
 const queryId = ref<string | null>(null)
 const showConnSelect = ref(false)
+
+// 编辑器 / 结果区高度:分隔条可拖拽(见 .hsplit),上限随面板实际高度收
+const paneEl = ref<HTMLElement>()
+const { size: resultsHeight, onPointerDown: resultsSplit } = useSplitter(280, {
+  axis: 'y', side: 'end', min: 110,
+  max: () => Math.max(160, (paneEl.value?.clientHeight ?? 640) - 120),
+  storageKey: 'ds-results-h',
+})
 
 const sqlConns = computed(() => conns.items.filter(c => ['sqlite', 'mysql', 'pg'].includes(c.type)))
 const connId = computed({
@@ -149,7 +158,7 @@ defineExpose({ run })
 </script>
 
 <template>
-  <section class="pane">
+  <section class="pane" ref="paneEl">
     <div class="pane-toolbar">
       <button class="pt-btn run" :disabled="running" @click="run">
         <AppIcon v-if="!running" name="play" :size="10" /> {{ running ? '执行中…' : '执行' }} <span style="opacity:.6;font-size:11px">Ctrl+Enter</span>
@@ -166,8 +175,8 @@ defineExpose({ run })
     <div class="editor-wrap">
       <CodeEditor ref="editorRef" lang="sql" :model-value="tab.content" @update:model-value="onEdit" @execute="run" />
     </div>
-    <div class="hsplit" />
-    <div class="results">
+    <div class="hsplit" @pointerdown="resultsSplit" />
+    <div class="results" :style="{ height: resultsHeight + 'px' }">
       <div class="result-tabs">
         <span class="rt-tab" :class="{ active: view === 'grid' }" @click="view = 'grid'">
           结果 <span v-if="rows.length" class="rt-badge">{{ rows.length }}</span>

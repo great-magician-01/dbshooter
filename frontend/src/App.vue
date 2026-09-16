@@ -13,12 +13,21 @@ import { useConnectionsStore } from '@/stores/connections'
 import { useThemeStore } from '@/stores/theme'
 import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { useSplitter } from '@/utils/split'
 
 const theme = useThemeStore()
 const ui = useUiStore()
 const conns = useConnectionsStore()
 const wsStore = useWorkspaceStore()
 const ai = useAiStore()
+
+// 侧栏 / AI 面板宽度:分隔条可拖拽(见 .vsplit)
+const { size: sidebarWidth, onPointerDown: sidebarSplit } = useSplitter(264, {
+  axis: 'x', min: 180, max: 560, storageKey: 'ds-sidebar-w',
+})
+const { size: aiWidth, onPointerDown: aiSplit } = useSplitter(360, {
+  axis: 'x', side: 'end', min: 280, max: 680, storageKey: 'ds-ai-w',
+})
 
 onMounted(async () => {
   theme.init()
@@ -31,11 +40,11 @@ onMounted(async () => {
   <div class="app-shell">
     <TopBar />
     <div class="app-middle">
-      <aside id="sidebar"><ConnectionTree /></aside>
-      <div class="vsplit" />
+      <aside id="sidebar" :style="{ width: sidebarWidth + 'px' }"><ConnectionTree /></aside>
+      <div class="vsplit" @pointerdown="sidebarSplit" />
       <main id="workspace"><TabWorkspace /></main>
-      <div v-if="ui.aiVisible" class="vsplit" />
-      <aside v-if="ui.aiVisible" id="aipanel"><AiPanel /></aside>
+      <div v-if="ui.aiVisible" class="vsplit" @pointerdown="aiSplit" />
+      <aside v-if="ui.aiVisible" id="aipanel" :style="{ width: aiWidth + 'px' }"><AiPanel /></aside>
     </div>
     <StatusBar />
     <ConnectionDialog v-if="ui.connDialogVisible" />
