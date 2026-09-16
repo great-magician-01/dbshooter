@@ -41,6 +41,16 @@ def resolve_format(fmt: str | None) -> str:
     return fmt
 
 
+def resolve_list_format(fmt: str | None) -> str:
+    """列表型命令(conn list/history/sessions 等)只支持 table/json;csv/raw 无意义。"""
+    if fmt is None:
+        return 'table'
+    if fmt not in ('table', 'json'):
+        from .errors import CliError
+        raise CliError(f'该命令只支持 --format table|json: {fmt}')
+    return fmt
+
+
 def warn(msg: str) -> None:
     """提示信息统一走 stderr,不污染 stdout 的数据流。"""
     print(msg, file=sys.stderr)
@@ -77,15 +87,19 @@ def result_to_csv(result: dict[str, Any]) -> str:
     return buf.getvalue()
 
 
-def print_results(results: list[dict[str, Any]], fmt: str, console: Console) -> list[str]:
-    """渲染 ExecResult 列表,返回错误信息列表(非空 → 调用方按业务失败退出)。"""
+def print_results(results: list[dict[str, Any]], fmt: str, console: Console | None) -> list[str]:
+    """渲染 ExecResult 列表,返回错误信息列表(非空 → 调用方按业务失败退出)。
+
+    console 仅 table 分支使用,csv/json/raw 可传 None。"""
     errors = [r['error'] for r in results if r.get('error')]
     if fmt == 'json':
         print(json.dumps(results, ensure_ascii=False, default=str))
         return errors
     if fmt in ('csv', 'raw'):
+        # command(redis 等)也带 columns/rows,不能只收 rows/documents,否则管道下静默无输出
         first = next((r for r in results
-                      if r.get('kind') in ('rows', 'documents') and not r.get('error')), None)
+                      if r.get('kind') in ('rows', 'documents', 'command')
+                      and r.get('columns') and not r.get('error')), None)
         if first is not None:
             if fmt == 'csv':
                 sys.stdout.write(result_to_csv(first))
@@ -96,6 +110,7 @@ def print_results(results: list[dict[str, Any]], fmt: str, console: Console) -> 
         _hint_truncated(results)
         return errors
     for r in results:
+        assert console is not None  # table 分支调用方必传
         _print_table(r, console)
     _hint_truncated(results)
     return errors

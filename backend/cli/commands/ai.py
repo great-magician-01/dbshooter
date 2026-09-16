@@ -7,7 +7,7 @@ import typer
 
 from ..client import resolve_base, resolve_token
 from ..errors import CliError, handle_cli_error
-from ..output import make_console, print_json, print_rows, resolve_format, warn
+from ..output import make_console, print_json, print_rows, resolve_list_format, warn
 from ..resolve import resolve_conn
 from ..state import get_state
 from ..wsclient import stream_ai_events, ws_url
@@ -80,7 +80,7 @@ def providers_list(ctx: typer.Context, fmt: str | None = _FMT_OPT) -> None:
     """列出 AI Provider(密钥不下发,只显示是否已设置)。"""
     st = get_state(ctx)
     items: list[dict[str, Any]] = st.client().get('/api/ai/providers')['items']
-    if resolve_format(fmt) == 'json':
+    if resolve_list_format(fmt) == 'json':
         print_json(items)
         return
     print_rows(['ID', '名称', 'base_url', '模型', '生效'],
@@ -153,7 +153,7 @@ def sessions_list(ctx: typer.Context, fmt: str | None = _FMT_OPT) -> None:
     """列出 AI 会话。"""
     st = get_state(ctx)
     items: list[dict[str, Any]] = st.client().get('/api/ai/sessions')['items']
-    if resolve_format(fmt) == 'json':
+    if resolve_list_format(fmt) == 'json':
         print_json(items)
         return
     print_rows(['ID', '标题', '更新时间'],

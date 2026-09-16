@@ -7,7 +7,7 @@ import typer
 
 from ..client import ApiClient
 from ..errors import CliError, handle_cli_error
-from ..output import print_json
+from ..output import print_json, resolve_list_format
 from ..resolve import resolve_conn
 from ..state import get_state
 
@@ -30,7 +30,7 @@ def tree(ctx: typer.Context,
     client = st.client()
     row = resolve_conn(client, conn)
     cid: str = row['id']
-    if fmt == 'json':
+    if resolve_list_format(fmt) == 'json':
         print_json(_fetch(client, cid, path))
         return
     level_cap = max(1, min(depth, MAX_DEPTH))

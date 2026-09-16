@@ -52,12 +52,26 @@ def test_conn_resolve_by_name_and_test(cli, sqlite_db):
 
 
 def test_conn_resolve_by_id_prefix(cli, sqlite_db):
-    _add_sqlite(cli, sqlite_db)
-    items = cli.invoke(app, ['conn', 'list', '--format', 'json']).output
     import json
-    cid = json.loads(items)[0]['id']
+    name = _add_sqlite(cli, sqlite_db)
+    items = json.loads(cli.invoke(app, ['conn', 'list', '--format', 'json']).output)
+    # 元数据库会话共享且 created_at 秒精度,不能假定 [0] 是刚建的,按名找回
+    cid = next(c['id'] for c in items if c['name'] == name)
     r = cli.invoke(app, ['conn', 'test', cid[:8]])
     assert r.exit_code == 0, r.output
+
+
+def test_conn_update(cli, sqlite_db):
+    import json
+    name = _add_sqlite(cli, sqlite_db)
+    r = cli.invoke(app, ['conn', 'update', name, '--name', f'{name}-改', '--readonly'])
+    assert r.exit_code == 0, r.output
+    items = json.loads(cli.invoke(app, ['conn', 'list', '--format', 'json']).output)
+    row = next(c for c in items if c['name'] == f'{name}-改')
+    assert row['readonly'] is True
+    assert row['params']['path'] == sqlite_db   # 未传的字段保持原值
+    r = cli.invoke(app, ['query', f'{name}-改', "insert into users(name) values ('x')"])
+    assert r.exit_code == 1 and '只读' in r.output   # readonly 生效
 
 
 def test_conn_resolve_ambiguous(cli, sqlite_db):
@@ -268,30 +282,35 @@ def test_ai_ask_error(cli, sqlite_conn_id, monkeypatch):
 
 
 def test_ai_providers_crud(cli):
-    r = cli.invoke(app, ['ai', 'providers', 'add', '--name', 'DeepSeek',
+    import uuid
+    pname = f'DS-{uuid.uuid4().hex[:6]}'   # test_api.py 也建过 DeepSeek,避开重名
+    r = cli.invoke(app, ['ai', 'providers', 'add', '--name', pname,
                          '--base-url', 'https://api.deepseek.com/v1', '--model', 'deepseek-chat',
                          '--api-key', 'sk-x', '--activate'])
     assert r.exit_code == 0, r.output
     r = cli.invoke(app, ['ai', 'providers', 'list'])
     assert r.exit_code == 0, r.output
-    assert 'DeepSeek' in r.output and 'deepseek-chat' in r.output
+    assert pname in r.output and 'deepseek-chat' in r.output
     import json
     items = json.loads(cli.invoke(app, ['ai', 'providers', 'list', '--format', 'json']).output)
-    pid = next(p for p in items if p['name'] == 'DeepSeek')['id']
-    assert pid  # activate 已生效(不重复断言状态字段,行为由服务端测试覆盖)
+    mine = next(p for p in items if p['name'] == pname)
+    assert mine['is_active']   # add --activate 已生效
+    pid = mine['id']
     r = cli.invoke(app, ['ai', 'providers', 'activate', pid[:8]])
     assert r.exit_code == 0, r.output
 
 
 def test_ai_providers_test_fails_gracefully(cli):
     """指向不可达地址的 provider,test 命令业务失败退出码 1。"""
-    r = cli.invoke(app, ['ai', 'providers', 'add', '--name', 'bad',
+    import uuid
+    bad = f'bad-{uuid.uuid4().hex[:6]}'
+    r = cli.invoke(app, ['ai', 'providers', 'add', '--name', bad,
                          '--base-url', 'http://127.0.0.1:9/v1', '--model', 'm',
                          '--api-key', 'k'])
     assert r.exit_code == 0, r.output
     import json
     items = json.loads(cli.invoke(app, ['ai', 'providers', 'list', '--format', 'json']).output)
-    pid = next(p for p in items if p['name'] == 'bad')['id']
+    pid = next(p for p in items if p['name'] == bad)['id']
     r = cli.invoke(app, ['ai', 'providers', 'test', pid[:8]])
     assert r.exit_code == 1
     assert '连接失败' in r.output
@@ -312,7 +331,60 @@ def test_settings_roundtrip(cli):
     assert r.exit_code == 1
 
 
-def test_serve_registered(cli):
-    """serve 是阻塞命令不进真跑,只验证已注册进帮助。"""
-    r = cli.invoke(app, ['--help'])
-    assert 'serve' in r.output
+def test_serve_registered():
+    """serve 是阻塞命令不进真跑,验证已注册(直接查注册表,help 里 --server 会误命中 'serve')。"""
+    names = [c.name for c in app.registered_commands]
+    assert 'serve' in names and 'query' in names and 'export' in names
+
+
+# ── review 修复回归 ──
+
+def test_ws_url_token_quoted():
+    """token 含 +/& 必须 URL 编码,否则服务端 parse_qsl 还原错误。"""
+    from backend.cli.wsclient import ws_url
+    assert ws_url('http://h:1', 'a+b&c=d') == 'ws://h:1/ws?token=a%2Bb%26c%3Dd'
+
+
+def test_command_kind_csv_not_empty(cli, sqlite_conn_id, capsys):
+    """redis 类 command 结果在 csv/raw 下也要有输出(管道默认 csv,不能静默空)。"""
+    from backend.cli.output import print_results
+    results = [{'kind': 'command', 'columns': [{'name': 'count', 'type': 'int'}],
+                'rows': [[3]], 'raw': 3}]
+    print_results(results, 'csv', None)
+    out = capsys.readouterr().out
+    assert 'count' in out and '3' in out
+    print_results(results, 'raw', None)
+    assert '3' in capsys.readouterr().out
+
+
+def test_query_file_gbk_and_bom(cli, sqlite_db, tmp_path):
+    """GBK 文件与 UTF-8-BOM 文件都能正确读入(BOM 不得触发只读误判)。"""
+    import uuid
+    name = f'ro-{uuid.uuid4().hex[:6]}'
+    assert cli.invoke(app, ['conn', 'add', '--name', name, '--type', 'sqlite', '--readonly',
+                            '--param', f'path={sqlite_db}']).exit_code == 0
+    gbk = tmp_path / 'gbk.sql'
+    gbk.write_bytes("select name from users where city='上海'".encode('gbk'))
+    r = cli.invoke(app, ['query', name, '-f', str(gbk), '--format', 'raw'])
+    assert r.exit_code == 0, r.output
+    assert '张三' in r.output
+    bom = tmp_path / 'bom.sql'
+    bom.write_bytes('﻿select 1'.encode('utf-8'))
+    r = cli.invoke(app, ['query', name, '-f', str(bom), '--format', 'raw'])
+    assert r.exit_code == 0, r.output   # 只读连接下仍放行 → BOM 已剥掉
+    assert r.output.strip() == '1'
+
+
+def test_query_missing_file_no_traceback(cli, sqlite_conn_id):
+    """文件不存在:业务失败退出码 1,不抛裸 traceback。"""
+    r = cli.invoke(app, ['query', sqlite_conn_id, '-f', 'no-such-file.sql'])
+    assert r.exit_code == 1
+    assert 'Traceback' not in r.output
+
+
+def test_export_has_bom(cli, sqlite_conn_id, tmp_path):
+    """export 与 query -o 统一带 BOM(Excel 直开不乱码)。"""
+    out = tmp_path / 'big.csv'
+    r = cli.invoke(app, ['export', sqlite_conn_id, 'select * from users', '-o', str(out)])
+    assert r.exit_code == 0, r.output
+    assert out.read_bytes().startswith(b'\xef\xbb\xbf')

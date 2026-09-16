@@ -8,7 +8,7 @@ from typing import Any
 import typer
 
 from ..errors import CliError, handle_cli_error
-from ..output import FMT_CHOICES, make_console, print_json, print_rows, resolve_format
+from ..output import FMT_CHOICES, make_console, print_json, print_rows, resolve_list_format
 from ..resolve import resolve_conn
 from ..state import get_state
 
@@ -58,7 +58,7 @@ def list_(ctx: typer.Context, fmt: str | None = _FMT_OPT) -> None:
     """列出所有连接。"""
     st = get_state(ctx)
     items: list[dict[str, Any]] = st.client().get('/api/connections')['items']
-    if resolve_format(fmt) == 'json':
+    if resolve_list_format(fmt) == 'json':
         print_json(items)
         return
     print_rows(['ID', '名称', '类型', '地址', '只读'],

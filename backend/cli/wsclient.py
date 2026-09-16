@@ -7,15 +7,16 @@ from __future__ import annotations
 import json
 import uuid
 from typing import Any, Iterator
+from urllib.parse import quote
 
-from websockets.exceptions import InvalidStatus
+from websockets.exceptions import InvalidStatus, WebSocketException
 from websockets.sync.client import connect as _ws_connect
 
 from .errors import EXIT_UNAUTHORIZED, EXIT_UNREACHABLE, CliError
 
 
 def ws_url(base: str, token: str | None) -> str:
-    """http(s) base → ws(s):///ws,令牌走 ?token=(与服务端约定一致)。"""
+    """http(s) base → ws(s):///ws,令牌走 ?token=(与服务端约定一致;quote 防 +/& 被误解析)。"""
     b = base.rstrip('/')
     if b.startswith('https://'):
         b = 'wss://' + b[len('https://'):]
@@ -24,7 +25,7 @@ def ws_url(base: str, token: str | None) -> str:
     else:
         b = 'ws://' + b
     url = b + '/ws'
-    return f'{url}?token={token}' if token else url
+    return f'{url}?token={quote(token, safe="")}' if token else url
 
 
 def stream_ai_events(url: str, payload: dict[str, Any],
@@ -32,7 +33,8 @@ def stream_ai_events(url: str, payload: dict[str, Any],
     """发一条 ai.text2sql,按请求 id 过滤,逐事件 yield 到 ai.done / ai.error 为止。"""
     req_id = uuid.uuid4().hex
     try:
-        with _ws_connect(url, open_timeout=10, close_timeout=5) as ws:
+        # proxy=None:不走环境变量里的 HTTP 代理(本机/内网服务经代理只会徒增故障面)
+        with _ws_connect(url, open_timeout=10, close_timeout=5, proxy=None) as ws:
             ws.send(json.dumps({'id': req_id, 'type': 'ai.text2sql', 'payload': payload}))
             while True:
                 msg = json.loads(ws.recv(timeout=timeout))
@@ -49,7 +51,10 @@ def stream_ai_events(url: str, payload: dict[str, Any],
             raise CliError('未授权:请用 --token 或 DBSHOOTER_TOKEN 提供访问令牌',
                            EXIT_UNAUTHORIZED) from e
         raise CliError(f'WS 握手失败({status}): {url}') from e
+    except WebSocketException as e:
+        # 连接中途断开 / 单帧超限等(非 OSError 族,需单独收)
+        raise CliError(f'WS 连接中断: {e}', EXIT_UNREACHABLE) from e
     except (ConnectionRefusedError, TimeoutError, OSError) as e:
-        raise CliError(f'无法连接服务 {url.split("/ws")[0]}:'
-                       '先启动服务,或用 --server / DBSHOOTER_URL 指定地址',
+        raise CliError(f'无法连接或响应超时 {url.split("/ws")[0]}:'
+                       '确认服务已启动,或调大 --timeout',
                        EXIT_UNREACHABLE) from e

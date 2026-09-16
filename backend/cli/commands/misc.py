@@ -6,7 +6,7 @@ import os
 import typer
 
 from ..errors import CliError, handle_cli_error
-from ..output import make_console, print_json, print_rows, resolve_format
+from ..output import make_console, print_json, print_rows, resolve_list_format
 from ..state import get_state
 
 settings_app = typer.Typer(help='通用设置(与 Web 端共享存储)', no_args_is_help=True)
@@ -24,11 +24,15 @@ def serve(ctx: typer.Context,
           host: str | None = typer.Option(None, '--host'),
           port: int | None = typer.Option(None, '--port'),
           dev: bool = typer.Option(False, '--dev', help='热重载(等价 DBSHOOTER_DEV=1)')) -> None:
-    """启动本机服务(等价 python run.py)。"""
+    """启动本机服务(等价 python run.py)。
+
+    注意:pip install . 场景下默认数据目录会落在 site-packages 旁,
+    建议显式设置 DBSHOOTER_DATA_DIR。
+    """
     import uvicorn
     uvicorn.run('backend.app.main:app',
-                host=host or os.environ.get('DBSHOOTER_HOST', '0.0.0.0'),
-                port=port or int(os.environ.get('DBSHOOTER_PORT', '5718')),
+                host=host if host is not None else os.environ.get('DBSHOOTER_HOST', '0.0.0.0'),
+                port=port if port is not None else int(os.environ.get('DBSHOOTER_PORT', '5718')),
                 reload=dev or os.environ.get('DBSHOOTER_DEV') == '1')
 
 
@@ -45,7 +49,7 @@ def settings_get(ctx: typer.Context,
             raise CliError(f'未设置: {key}')
         print(values[key])
         return
-    if resolve_format(fmt) == 'json':
+    if resolve_list_format(fmt) == 'json':
         print_json(values)
         return
     print_rows(['键', '值'], [[k, v] for k, v in values.items()], make_console(st.no_color))

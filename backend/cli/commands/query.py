@@ -12,7 +12,7 @@ import typer
 
 from ..errors import CliError, handle_cli_error
 from ..output import (FMT_CHOICES, make_console, print_json, print_results,
-                      print_rows, resolve_format, result_to_csv)
+                      print_rows, resolve_format, resolve_list_format, result_to_csv)
 from ..resolve import resolve_conn
 from ..state import get_state
 
@@ -24,13 +24,24 @@ def _read_stmt(stmt: str | None, file: str | None, use_stdin: bool) -> str:
     if sum([stmt is not None, file is not None, use_stdin]) > 1:
         raise CliError('语句只能三选一:位置参数 / -f 文件 / --stdin')
     if file is not None:
-        with open(file, encoding='utf-8') as f:
-            return f.read()
+        return _read_stmt_file(file)
     if use_stdin:
         return sys.stdin.read()
     if not stmt or not stmt.strip():
         raise CliError('缺少语句:直接跟在 CONN 后,或用 -f 文件 / --stdin 管道')
     return stmt
+
+
+def _read_stmt_file(file: str) -> str:
+    """读语句文件:utf-8-sig 剥 BOM(BOM 会让只读拦截误判首词),GBK 兜底(中文 Windows 常见)。"""
+    with open(file, 'rb') as f:
+        raw = f.read()
+    for enc in ('utf-8-sig', 'gbk'):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    raise CliError(f'无法识别文件编码(支持 UTF-8/GBK): {file}')
 
 
 def _first_rows(results: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -61,7 +72,7 @@ def query(ctx: typer.Context,
         if first is None:
             err = next((x.get('error') for x in results if x.get('error')), '查询无结果集')
             raise CliError(str(err))
-        with open(out, 'w', encoding='utf-8-sig', newline='') as f:  # 与 /api/query/export 同编码约定
+        with open(out, 'w', encoding='utf-8-sig', newline='') as f:  # BOM:Excel 直开不乱码
             f.write(result_to_csv(first))
         typer.echo(f"已导出 {len(first.get('rows', []))} 行 → {out}")
         return
@@ -82,7 +93,9 @@ def export(ctx: typer.Context,
     n = 0
     with client.stream('/api/query/export',
                        {'conn_id': row['id'], 'stmt': stmt, 'limit': limit}) as resp:
+        # 服务端流是纯 UTF-8 无 BOM,本地补 BOM,与 query -o 行为一致(Excel 直开不乱码)
         with open(out, 'wb') as f:
+            f.write(b'\xef\xbb\xbf')
             for chunk in resp.iter_bytes():
                 f.write(chunk)
                 n += len(chunk)
@@ -97,7 +110,7 @@ def history(ctx: typer.Context,
     st = get_state(ctx)
     client = st.client()
     items: list[dict[str, Any]] = client.get('/api/query/history', limit=limit)['items']
-    if resolve_format(fmt) == 'json':
+    if resolve_list_format(fmt) == 'json':
         print_json(items)
         return
     conns = {c['id']: c['name'] for c in client.get('/api/connections')['items']}
