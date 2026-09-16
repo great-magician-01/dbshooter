@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 
 import { http, post } from '@/api/http'
+import AppIcon from '@/components/AppIcon.vue'
 import ResultGrid from '@/components/ResultGrid.vue'
 import type { Column, Tab } from '@/types'
 
@@ -53,10 +54,10 @@ onMounted(load)
 <template>
   <section class="pane">
     <div class="pane-toolbar">
-      <span class="tn-ico">▦</span>
+      <span class="tn-ico"><AppIcon name="table" /></span>
       <b style="font-size:12.5px">{{ tab.title }}</b>
       <button class="pt-btn" @click="load">刷新</button>
-      <button class="pt-btn" title="二期:行编辑/新增" disabled>＋ 新增行</button>
+      <button class="pt-btn" title="二期:行编辑/新增" disabled><AppIcon name="plus" :size="11" /> 新增行</button>
       <button class="pt-btn" @click="exportCsv">导出 CSV</button>
       <div class="pt-conn">
         <input v-model="filter" placeholder="过滤 (WHERE 条件,回车生效)" style="width:240px"

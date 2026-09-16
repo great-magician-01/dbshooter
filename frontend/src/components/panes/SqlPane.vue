@@ -3,7 +3,9 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 
 import { get, post } from '@/api/http'
 import { ws } from '@/api/ws'
+import AppIcon from '@/components/AppIcon.vue'
 import CodeEditor from '@/components/CodeEditor.vue'
+import { iconSvg } from '@/components/icons'
 import ResultGrid from '@/components/ResultGrid.vue'
 import { useConnectionsStore } from '@/stores/connections'
 import { useUiStore } from '@/stores/ui'
@@ -75,12 +77,12 @@ async function run() {
       const rc = d.row_count ?? 0
       statusText.value = `${rc} 行 · ${formatMs(d.elapsed_ms)}${d.truncated ? ' · 已截断' : ''}`
       workspace.lastRun = { rows: rc, ms: d.elapsed_ms }
-      pushLog(`✓ ${rc} 行,${formatMs(d.elapsed_ms)}`, 'ok')
+      pushLog(`${iconSvg('check')} ${rc} 行,${formatMs(d.elapsed_ms)}`, 'ok')
       running.value = false
       ws.done(ev.id)
     } else if (ev.event === 'query.error') {
       statusText.value = `错误:${d.error ?? '执行失败'}`
-      pushLog(`✗ ${d.error ?? '执行失败'}`, 'err')
+      pushLog(`${iconSvg('close')} ${d.error ?? '执行失败'}`, 'err')
       running.value = false
       ws.done(ev.id)
     }
@@ -150,7 +152,7 @@ defineExpose({ run })
   <section class="pane">
     <div class="pane-toolbar">
       <button class="pt-btn run" :disabled="running" @click="run">
-        {{ running ? '执行中…' : '▶ 执行' }} <span style="opacity:.6;font-size:11px">Ctrl+Enter</span>
+        <AppIcon v-if="!running" name="play" :size="10" /> {{ running ? '执行中…' : '执行' }} <span style="opacity:.6;font-size:11px">Ctrl+Enter</span>
       </button>
       <button v-if="running" class="pt-btn" @click="cancel">取消</button>
       <button class="pt-btn" @click="showPlan">执行计划</button>

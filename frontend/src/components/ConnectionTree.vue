@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 
+import AppIcon from '@/components/AppIcon.vue'
 import TreeNode from '@/components/TreeNode.vue'
 import { useConnectionsStore } from '@/stores/connections'
 import { useUiStore } from '@/stores/ui'
@@ -53,14 +54,14 @@ onMounted(() => { if (!conns.items.length) conns.load() })
     </div>
     <div v-for="conn in filtered" :key="conn.id" class="tn open">
       <div class="tn-row" @dblclick="openConnTab(conn)">
-        <span class="tn-arrow" style="visibility:hidden">▶</span>
+        <span class="tn-arrow" style="visibility:hidden"><AppIcon name="caret" :size="10" /></span>
         <span class="dbbadge" :style="{ background: BADGE[conn.type]?.[1] }">{{ BADGE[conn.type]?.[0] }}</span>
         <span class="tn-label" :title="conn.name">{{ conn.name }}</span>
         <span class="tn-meta">{{ conn.type }}</span>
         <span class="tn-actions">
-          <button class="icon-btn" title="编辑连接" @click.stop="ui.openConnDialog(conn.id)">✎</button>
+          <button class="icon-btn" title="编辑连接" @click.stop="ui.openConnDialog(conn.id)"><AppIcon name="edit" :size="12" /></button>
           <button class="icon-btn" title="删除连接"
-                  @click.stop="conns.remove(conn.id)">✕</button>
+                  @click.stop="conns.remove(conn.id)"><AppIcon name="close" :size="12" /></button>
         </span>
       </div>
       <div class="tn-children">

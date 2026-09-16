@@ -2,6 +2,7 @@
 import { useThemeStore } from '@/stores/theme'
 import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
+import AppIcon from '@/components/AppIcon.vue'
 
 const ui = useUiStore()
 const theme = useThemeStore()
@@ -44,8 +45,8 @@ function newSqlTab() {
         AI 助手
       </button>
       <button class="tb-btn" title="切换暗/亮主题" @click="theme.toggle()">
-        <template v-if="theme.mode === 'dark'">☾ 亮色</template>
-        <template v-else>☀ 暗色</template>
+        <template v-if="theme.mode === 'dark'"><AppIcon name="moon" :size="12" /> 亮色</template>
+        <template v-else><AppIcon name="sun" :size="12" /> 暗色</template>
       </button>
       <button class="tb-btn" title="设置:AI Provider 管理" @click="ui.settingsVisible = true">设置</button>
     </div>

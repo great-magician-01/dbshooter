@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 
+import AppIcon from '@/components/AppIcon.vue'
 import { useAiStore } from '@/stores/ai'
 import { useUiStore } from '@/stores/ui'
 import { toast } from '@/utils/toast'
@@ -61,9 +62,9 @@ async function test() {
   try {
     const r = await ai.testProvider({ id: form.id, name: form.name,
       base_url: form.base_url, api_key: form.api_key, model: form.model })
-    testMsg.value = { ok: r.ok, text: r.ok ? `✓ ${r.message}` : `✗ ${r.message}` }
+    testMsg.value = { ok: r.ok, text: r.message }
   } catch (e: any) {
-    testMsg.value = { ok: false, text: `✗ ${e.message}` }
+    testMsg.value = { ok: false, text: e.message }
   } finally {
     testing.value = false
   }
@@ -74,7 +75,7 @@ async function test() {
   <div class="modal-mask" @click.self="ui.settingsVisible = false">
     <div class="modal" style="width:680px">
       <div class="modal-head">设置 · AI Provider(OpenAI 兼容,任意时刻仅一个生效)
-        <button class="icon-btn" @click="ui.settingsVisible = false">✕</button>
+        <button class="icon-btn" @click="ui.settingsVisible = false"><AppIcon name="close" :size="12" /></button>
       </div>
       <div class="settings-body">
         <div class="prov-list">
@@ -83,7 +84,7 @@ async function test() {
             <div class="pn">{{ p.name }}<span v-if="p.is_active" class="on">生效中</span></div>
             <div class="pm">{{ p.model }}</div>
           </div>
-          <button class="chip add" @click="addNew">＋ 新增 Provider</button>
+          <button class="chip add" @click="addNew"><AppIcon name="plus" :size="11" /> 新增 Provider</button>
         </div>
         <div class="prov-form">
           <div class="form-grid">
@@ -95,7 +96,9 @@ async function test() {
           </div>
           <div class="prov-actions">
             <button class="btn" :disabled="testing" @click="test">{{ testing ? '测试中…' : '测试' }}</button>
-            <span class="test-msg" :class="testMsg?.ok ? 'ok' : 'err'">{{ testMsg?.text }}</span>
+            <span v-if="testMsg" class="test-msg" :class="testMsg.ok ? 'ok' : 'err'">
+              <AppIcon :name="testMsg.ok ? 'check' : 'close'" :size="11" /> {{ testMsg.text }}
+            </span>
             <span style="flex:1" />
             <button v-if="form.id" class="btn" @click="remove">删除</button>
             <button class="btn" @click="activate">设为生效</button>

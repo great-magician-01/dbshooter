@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import AppIcon from '@/components/AppIcon.vue'
 import DataPane from '@/components/panes/DataPane.vue'
 import MongoPane from '@/components/panes/MongoPane.vue'
 import RedisPane from '@/components/panes/RedisPane.vue'
@@ -13,7 +14,7 @@ const workspace = useWorkspaceStore()
 const conns = useConnectionsStore()
 
 const PANE: Record<TabType, any> = { sql: SqlPane, data: DataPane, redis: RedisPane, mongo: MongoPane }
-const TICON: Record<TabType, string> = { sql: 'ƒ', data: '▦', redis: '🔑', mongo: '▤' }
+const TICON: Record<TabType, string> = { sql: 'sql', data: 'table', redis: 'redis', mongo: 'mongo' }
 
 function subOf(tab: Tab): string {
   if (tab.connection_id) {
@@ -31,18 +32,18 @@ const active = computed(() => workspace.activeTab)
     <div v-for="tab in workspace.tabs" :key="tab.id" class="tab"
          :class="{ active: tab.id === workspace.activeId }"
          @click="workspace.activate(tab.id)">
-      <span class="tn-ico">{{ TICON[tab.type] }}</span>
+      <span class="tn-ico"><AppIcon :name="TICON[tab.type]" /></span>
       <span>{{ tab.title }}</span>
       <span v-if="subOf(tab)" class="tab-sub">{{ subOf(tab) }}</span>
       <span class="tab-close" title="关闭"
-            @click.stop="workspace.closeTab(tab.id)">✕</span>
+            @click.stop="workspace.closeTab(tab.id)"><AppIcon name="close" :size="11" /></span>
     </div>
   </div>
   <div class="panes">
     <div v-if="!active" class="empty-pane">
       <div class="box">
         <h2>没有打开的编辑器</h2>
-        <p>双击左侧树中的表、集合或键开始浏览，<br>或点顶栏 <b>＋SQL</b> 新建编辑器。</p>
+        <p>双击左侧树中的表、集合或键开始浏览，<br>或点顶栏 <b>SQL</b> 新建编辑器。</p>
       </div>
     </div>
     <KeepAlive>

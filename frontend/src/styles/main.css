@@ -31,6 +31,9 @@ input, textarea, select { font:inherit; color:var(--text) }
 :focus-visible { outline:1px solid var(--accent); outline-offset:-1px }
 .hidden { display:none !important }
 
+/* 内联 SVG 图标(AppIcon / iconSvg) */
+.app-icon { display:inline-block; vertical-align:-2px; flex:none }
+
 .app-shell { display:flex; flex-direction:column; height:100vh }
 .app-middle { flex:1; display:flex; min-height:0 }
 
@@ -68,6 +71,7 @@ input, textarea, select { font:inherit; color:var(--text) }
 .tn.open > .tn-row .tn-arrow { transform:rotate(90deg) }
 .tn.leaf > .tn-row .tn-arrow { visibility:hidden }
 .tn-ico { width:17px; height:17px; flex:none; display:grid; place-items:center; color:var(--text2) }
+.tn-ico.pk { color:var(--amber) }
 .tn-label { font-size:12.5px; overflow:hidden; text-overflow:ellipsis }
 .tn-meta { margin-left:auto; font-size:11px; color:var(--muted); padding-left:8px; display:flex; gap:2px }
 .tn-actions { margin-left:auto; display:none; gap:2px }
@@ -183,7 +187,7 @@ pre.log .ok { color:var(--green) } pre.log .err { color:var(--red) }
 .chip { display:inline-flex; align-items:center; gap:5px; height:22px; padding:0 8px;
         border-radius:11px; background:var(--accent-dim); color:var(--accent);
         font:11.5px/1 var(--mono); cursor:default }
-.chip i { cursor:pointer; font-style:normal; opacity:.7 }
+.chip i { cursor:pointer; font-style:normal; opacity:.7; display:inline-flex; align-items:center }
 .chip.add { background:transparent; border:1px dashed var(--border); color:var(--text2); cursor:pointer }
 .ai-msgs { flex:1; overflow:auto; padding:14px; display:flex; flex-direction:column; gap:12px }
 .msg { max-width:92%; font-size:12.5px; line-height:1.6 }
@@ -220,6 +224,7 @@ pre.log .ok { color:var(--green) } pre.log .err { color:var(--red) }
 .dd-item:hover { background:var(--hover); color:var(--text) }
 .dd-item.active { color:var(--accent) }
 .dd-item .sub { margin-left:auto; font-size:11px; color:var(--muted); font-family:var(--mono) }
+.dd-check { color:var(--accent) }
 .dd-sep { height:1px; background:var(--border); margin:4px 6px }
 button.prov { border:1px solid var(--border); border-radius:10px; padding:2px 8px; font-size:11px;
               color:var(--muted); cursor:pointer; font-family:var(--mono) }

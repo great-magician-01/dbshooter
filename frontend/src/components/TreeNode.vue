@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 
+import AppIcon from '@/components/AppIcon.vue'
 import { useConnectionsStore } from '@/stores/connections'
 import { useWorkspaceStore } from '@/stores/workspace'
 import type { Connection, MetaNode } from '@/types'
@@ -22,15 +23,15 @@ const sel = ref(false)
 
 const ico = computed(() => {
   switch (props.node.kind) {
-    case 'table': return '▦'
-    case 'view': return '👁'
-    case 'column': return props.node.extra?.pk ? '🔑' : '·'
-    case 'key': return '🔑'
-    case 'keygroup': return '🗂'
-    case 'collection': return '▤'
-    case 'index': return '⇥'
-    case 'database': case 'schema': return '◆'
-    default: return '▸'
+    case 'table': return 'table'
+    case 'view': return 'view'
+    case 'column': return props.node.extra?.pk ? 'pk' : 'column'
+    case 'key': return 'key'
+    case 'keygroup': return 'keygroup'
+    case 'collection': return 'collection'
+    case 'index': return 'index'
+    case 'database': case 'schema': return 'database'
+    default: return 'dot'
   }
 })
 
@@ -81,8 +82,8 @@ function openTab() {
 <template>
   <div class="tn" :class="{ open, leaf: !node.has_children }">
     <div v-if="!isVirtual" class="tn-row" :class="{ sel }" @click="toggle" @dblclick="openTab">
-      <span class="tn-arrow">▶</span>
-      <span class="tn-ico">{{ ico }}</span>
+      <span class="tn-arrow"><AppIcon name="caret" :size="10" /></span>
+      <span class="tn-ico" :class="{ pk: ico === 'pk' }"><AppIcon :name="ico" /></span>
       <span class="tn-label" :title="node.label">{{ node.label }}</span>
       <span v-if="loading" class="tn-meta">…</span>
       <span v-else-if="node.kind === 'column' && node.extra?.type" class="tn-meta">{{ node.extra.type }}</span>

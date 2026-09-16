@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 
 import { get, post } from '@/api/http'
+import AppIcon from '@/components/AppIcon.vue'
 import ResultGrid from '@/components/ResultGrid.vue'
 import { useConnectionsStore } from '@/stores/connections'
 import type { MetaNode, Tab } from '@/types'
@@ -75,7 +76,7 @@ onMounted(async () => {
 <template>
   <section class="pane">
     <div class="pane-toolbar">
-      <span class="tn-ico">🔑</span><b style="font-size:12.5px">{{ tab.title }}</b>
+      <span class="tn-ico"><AppIcon name="redis" /></span><b style="font-size:12.5px">{{ tab.title }}</b>
       <select v-model.number="dbIndex" style="height:26px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px" @change="loadKeys">
         <option v-for="i in 16" :key="i - 1" :value="i - 1">db{{ i - 1 }}</option>
       </select>

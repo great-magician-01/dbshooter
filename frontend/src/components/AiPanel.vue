@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue'
 
+import AppIcon from '@/components/AppIcon.vue'
 import { useAiStore } from '@/stores/ai'
 import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -108,21 +109,21 @@ onMounted(() => document.addEventListener('click', closeMenus))
           {{ s.title }}<span class="sub">{{ (s.updated_at ?? '').slice(5, 16).replace('T', ' ') }}</span>
         </div>
         <div class="dd-sep" />
-        <div class="dd-item" @click="createSession">＋ 新会话</div>
+        <div class="dd-item" @click="createSession"><AppIcon name="plus" :size="11" /> 新会话</div>
       </div>
     </div>
     <div class="dd" style="margin-left:auto">
       <button class="prov" title="生效中的 Provider(OpenAI 兼容),点击切换"
               @click.stop="provMenuOpen = !provMenuOpen">
-        {{ ai.activeProvider?.name ?? '未配置' }} ▾
+        {{ ai.activeProvider?.name ?? '未配置' }} <AppIcon name="chevron" :size="10" />
       </button>
       <div v-if="provMenuOpen" class="dd-menu">
         <div v-for="p in ai.providers" :key="p.id" class="dd-item" :class="{ active: p.is_active }"
              @click="pickProvider(p.id)">
-          {{ p.name }}<span class="sub">{{ p.model }}</span>{{ p.is_active ? ' ✓' : '' }}
+          {{ p.name }}<span class="sub">{{ p.model }}</span><AppIcon v-if="p.is_active" name="check" :size="11" class="dd-check" />
         </div>
         <div class="dd-sep" />
-        <div class="dd-item" @click="provMenuOpen = false; ui.settingsVisible = true">⚙ 管理 Provider…</div>
+        <div class="dd-item" @click="provMenuOpen = false; ui.settingsVisible = true"><AppIcon name="gear" :size="11" /> 管理 Provider…</div>
       </div>
     </div>
   </div>
@@ -130,10 +131,10 @@ onMounted(() => document.addEventListener('click', closeMenus))
   <div class="ai-ctx">
     <span class="lbl">已附加表结构:</span>
     <span v-for="t in ai.ctxTables" :key="t" class="chip">
-      {{ t }} <i title="移除" @click="ai.ctxTables.splice(ai.ctxTables.indexOf(t), 1)">✕</i>
+      {{ t }} <i title="移除" @click="ai.ctxTables.splice(ai.ctxTables.indexOf(t), 1)"><AppIcon name="close" :size="10" /></i>
     </span>
     <input v-model="newTable" class="chip add" style="width:110px;outline:none"
-           placeholder="＋ 表名,回车" @keyup.enter="addCtxTable">
+           placeholder="表名,回车添加" @keyup.enter="addCtxTable">
   </div>
 
   <div ref="msgsEl" class="ai-msgs">
