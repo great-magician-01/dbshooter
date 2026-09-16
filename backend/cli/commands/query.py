@@ -102,7 +102,7 @@ def history(ctx: typer.Context,
         return
     conns = {c['id']: c['name'] for c in client.get('/api/connections')['items']}
     print_rows(['时间(UTC)', '连接', '耗时', '行数', '状态', '语句'],
-               [[str(h['executed_at']).replace('T', ' '),
+               [[str(h['executed_at'])[:19].replace('T', ' '),   # 截到秒,避免时区后缀挤爆列宽
                  conns.get(h.get('connection_id'), h.get('connection_id') or ''),
                  f"{h['elapsed_ms']}ms", h['row_count'], h['status'], _short(h['stmt'])]
                 for h in items],
