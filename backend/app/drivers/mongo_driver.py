@@ -65,11 +65,20 @@ def _restore(value: Any) -> Any:
 
 
 def parse_args(text: str) -> list[Any]:
-    """解析方法参数(json5,宽容未加引号的 key 与单引号)。"""
+    """解析方法参数(json5,宽容未加引号的 key 与单引号)。
+
+    占位符还原($$date:/$$oid:)对字面量盲还原,用户数据里恰好以这两个前缀
+    开头的字符串会触发 fromisoformat/ObjectId 异常 —— 统一收口为 QueryError。
+    """
     text = text.strip()
     if not text:
         return []
-    value = _restore(pyjson5.decode(f'[{_preprocess(text)}]'))
+    try:
+        value = _restore(pyjson5.decode(f'[{_preprocess(text)}]'))
+    except QueryError:
+        raise
+    except Exception as e:
+        raise QueryError(f'参数解析失败: {e}') from e
     return value
 
 
@@ -123,7 +132,13 @@ class MongoDriver(DriverBase):
                     username=self.cfg.get('username') or None,
                     password=self.cfg.get('password') or None,
                     serverSelectionTimeoutMS=5000)
-            await client.admin.command('ping')  # 连不上即抛错,不缓存半成品
+            try:
+                await client.admin.command('ping')  # 连不上即抛错,不缓存半成品
+            except Exception:
+                # ping 失败时 client 未挂上 self,必须就地回收:
+                # motor 的 server monitor 线程与连接池不会随 GC 释放
+                client.close()
+                raise
             self.client = client
 
     async def test(self) -> tuple[bool, str]:

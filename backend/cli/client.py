@@ -10,7 +10,7 @@ from typing import Any, Iterator
 
 import httpx
 
-from .errors import EXIT_UNAUTHORIZED, EXIT_UNREACHABLE, CliError
+from .errors import EXIT_UNAUTHORIZED, EXIT_UNREACHABLE, CliError, mask_url
 
 DEFAULT_SERVER = 'http://127.0.0.1:5718'
 
@@ -43,6 +43,14 @@ def _raise_for(resp: httpx.Response) -> None:
     raise CliError(f'请求失败({resp.status_code}): {detail}')
 
 
+def _invalid_url(e: httpx.InvalidURL) -> CliError:
+    """地址本身非法(端口写成 57l8 之类):请求压根发不出去,给中文报错。
+
+    注意 httpx.InvalidURL 直接继承 Exception、不是 HTTPError 子类(MRO 里没有),
+    handle_cli_error 与这里的 ConnectError 分支都收不到,不转就是裸 traceback。"""
+    return CliError(f'无效的服务地址: {e}(检查 --server / DBSHOOTER_URL)')
+
+
 class ApiClient:
     """对 /api 的最薄封装,只负责传输与错误转换,不含任何业务逻辑。"""
 
@@ -54,6 +62,8 @@ class ApiClient:
             resp = self._inner.get(url, params={k: v for k, v in params.items() if v is not None})
         except (httpx.ConnectError, httpx.ConnectTimeout) as e:
             raise CliError(self._unreachable(), EXIT_UNREACHABLE) from e
+        except httpx.InvalidURL as e:
+            raise _invalid_url(e) from e
         _raise_for(resp)
         return _as_json(resp)
 
@@ -62,6 +72,8 @@ class ApiClient:
             resp = self._inner.post(url, json=body or {})
         except (httpx.ConnectError, httpx.ConnectTimeout) as e:
             raise CliError(self._unreachable(), EXIT_UNREACHABLE) from e
+        except httpx.InvalidURL as e:
+            raise _invalid_url(e) from e
         _raise_for(resp)
         return _as_json(resp)
 
@@ -76,9 +88,12 @@ class ApiClient:
                 yield resp
         except (httpx.ConnectError, httpx.ConnectTimeout) as e:
             raise CliError(self._unreachable(), EXIT_UNREACHABLE) from e
+        except httpx.InvalidURL as e:
+            raise _invalid_url(e) from e
 
     def _unreachable(self) -> str:
-        return _UNREACHABLE_HINT.format(base=str(self._inner.base_url).rstrip('/'))
+        # 地址要脱敏:str(URL) 会带出 ?token= 与 user:pass@(见 errors.mask_url)
+        return _UNREACHABLE_HINT.format(base=mask_url(str(self._inner.base_url)).rstrip('/'))
 
 
 def resolve_base(server: str | None) -> str:
@@ -94,5 +109,10 @@ def make_client(server: str | None, token: str | None, timeout: float) -> ApiCli
     base = resolve_base(server)
     tok = resolve_token(token)
     headers = {'Authorization': f'Bearer {tok}'} if tok else {}
-    return ApiClient(httpx.Client(base_url=base, headers=headers,
-                                  timeout=httpx.Timeout(timeout, connect=5.0)))
+    try:
+        # httpx 在构造 Client 时就会解析 base_url,端口非法(如 :57l8)在这里就抛 InvalidURL
+        inner = httpx.Client(base_url=base, headers=headers,
+                             timeout=httpx.Timeout(timeout, connect=5.0))
+    except httpx.InvalidURL as e:
+        raise _invalid_url(e) from e
+    return ApiClient(inner)

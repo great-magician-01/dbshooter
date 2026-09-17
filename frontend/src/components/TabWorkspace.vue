@@ -46,7 +46,8 @@ const active = computed(() => workspace.activeTab)
         <p>双击左侧树中的表、集合或键开始浏览，<br>或点顶栏 <b>SQL</b> 新建编辑器。</p>
       </div>
     </div>
-    <KeepAlive>
+    <!-- max=10:LRU 裁剪缓存实例,已关闭的页签不会永久持有 CodeMirror 与结果集 -->
+    <KeepAlive :max="10">
       <component :is="PANE[active.type]" v-if="active" :key="active.id" :tab="active" />
     </KeepAlive>
   </div>

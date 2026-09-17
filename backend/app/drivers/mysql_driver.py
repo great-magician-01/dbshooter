@@ -103,7 +103,10 @@ class MysqlDriver(DriverBase):
         async with self.pool.acquire() as conn, conn.cursor() as cur:
             for t in tables:
                 try:
-                    # 标识符反引号翻倍防注入,支持 db.table 两段限定名
+                    # 标识符反引号翻倍防注入;NO_BACKSLASH_ESCAPES 关闭时反斜杠在
+                    # 反引号内仍是转义符,无法安全内嵌,直接拒绝含 \ 的名字
+                    if '\\' in t:
+                        continue
                     ident = '.'.join('`' + seg.replace('`', '``') + '`'
                                      for seg in t.split('.'))
                     await cur.execute(f'SHOW CREATE TABLE {ident}')
@@ -121,25 +124,29 @@ class MysqlDriver(DriverBase):
         assert self.pool is not None
         readonly = bool(self.cfg.get('readonly'))
         results: list[ExecResult] = []
-        async with self.pool.acquire() as conn, conn.cursor() as cur:
+        async with self.pool.acquire() as conn:
             for single in split_sql(stmt):
                 ensure_writable(single, readonly)
                 t0 = time.monotonic()
                 try:
-                    await cur.execute(single)
-                    if cur.description:
-                        cols = [{'name': d[0], 'type': _TYPE_NAMES.get(d[1], str(d[1]))}
-                                for d in cur.description]
-                        fetched = await cur.fetchmany(limit + 1)
-                        results.append(ExecResult(
-                            kind='rows', columns=cols,
-                            rows=[[jsonable(v) for v in r] for r in fetched[:limit]],
-                            truncated=len(fetched) > limit,
-                            elapsed_ms=int((time.monotonic() - t0) * 1000)))
-                    else:
-                        results.append(ExecResult(
-                            kind='affected', affected=max(cur.rowcount, 0),
-                            elapsed_ms=int((time.monotonic() - t0) * 1000)))
+                    # SSCursor 流式游标:默认 Cursor 是 buffered,execute 即把全量结果
+                    # 读进内存,limit/BUFFER_CAP 形同虚设,大表 SELECT 直接 OOM。
+                    # 每条语句一个游标:关闭时丢弃未读行,避免残留结果集卡住下一条。
+                    async with conn.cursor(aiomysql.SSCursor) as cur:
+                        await cur.execute(single)
+                        if cur.description:
+                            cols = [{'name': d[0], 'type': _TYPE_NAMES.get(d[1], str(d[1]))}
+                                    for d in cur.description]
+                            fetched = await cur.fetchmany(limit + 1)
+                            results.append(ExecResult(
+                                kind='rows', columns=cols,
+                                rows=[[jsonable(v) for v in r] for r in fetched[:limit]],
+                                truncated=len(fetched) > limit,
+                                elapsed_ms=int((time.monotonic() - t0) * 1000)))
+                        else:
+                            results.append(ExecResult(
+                                kind='affected', affected=max(cur.rowcount, 0),
+                                elapsed_ms=int((time.monotonic() - t0) * 1000)))
                 except QueryError:
                     raise
                 except Exception as e:

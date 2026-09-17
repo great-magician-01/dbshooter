@@ -15,15 +15,24 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          # requirements-dev.txt 里 -r requirements.txt,缓存键两个都要覆盖(改任一个都要重建)
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
       # pyrightconfig.json 的 venv 指向 ./.venv,与本地开发一致
       - run: python -m venv .venv
       - run: .venv/bin/pip install -r requirements-dev.txt
+      # 校验依赖元数据自洽(版本区间互相满足、无缺包)。注意它的能力边界:只看元数据,
+      # 像 PyMySQL/aiomysql 那种"元数据满足、import 期符号缺失"的问题它查不出来(由 pytest 覆盖)
+      - run: .venv/bin/pip check
       - run: .venv/bin/pyright
       - run: .venv/bin/pytest -q
+      # 打包冒烟:pip install . 后要有 dbs 命令(轮子不含 backend/tests,见 pyproject.toml)
+      - run: .venv/bin/pip install .
+      - run: .venv/bin/dbs --help
 
   frontend:
-    name: 前端单测 + 构建 (vitest / vite)
+    name: 前端类型检查 + 单测 + 构建 (vue-tsc / vitest / vite)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +43,20 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
         working-directory: frontend
+      - run: npm run typecheck
+        working-directory: frontend
       - run: npm run test:run
         working-directory: frontend
       - run: npm run build
         working-directory: frontend
+
+  docker:
+    name: 镜像构建冒烟 (docker build)
+    runs-on: ubuntu-latest
+    # 前后端都绿了再烧构建时间;镜像本身不推送
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t dbshooter:ci .
+      # 镜像内的 dbs 命令(非 root + DBSHOOTER_HOST=0.0.0.0)可用性冒烟
+      - run: docker run --rm dbshooter:ci dbs --help

@@ -15,16 +15,41 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 
+/**
+ * 按 URL 过滤的调用:persistOrder 有 300ms 防抖,推进时间会把它的请求一并带出来,
+ * 因此校验单个接口时不能直接用 "总调用次数"。
+ */
+function callsTo(url: string) {
+  return vi.mocked(post).mock.calls.filter(c => c[0] === url)
+}
+
 describe('workspace store', () => {
-  it('addTab:新增即激活,并立即持久化', () => {
+  it('addTab:新增即激活,内容立即落库、顺序 300ms 防抖后落库', () => {
+    vi.useFakeTimers()
     const ws = useWorkspaceStore()
     const tab = ws.addTab({ type: 'sql', connection_id: 'c1' })
     expect(ws.activeId).toBe(tab.id)
     expect(ws.tabs).toHaveLength(1)
     expect(post).toHaveBeenCalledWith('/api/workspace/tabs/save',
       expect.objectContaining({ id: tab.id, type: 'sql' }))
+    expect(callsTo('/api/workspace/tabs/order')).toHaveLength(0)
+    vi.advanceTimersByTime(400)
     expect(post).toHaveBeenCalledWith('/api/workspace/tabs/order',
       expect.objectContaining({ active_id: tab.id }))
+    vi.useRealTimers()
+  })
+
+  it('persistOrder:连续操作合并为一次写入', () => {
+    vi.useFakeTimers()
+    const ws = useWorkspaceStore()
+    const t1 = ws.addTab({ type: 'sql' })
+    const t2 = ws.addTab({ type: 'sql' })
+    ws.activate(t1.id)
+    vi.advanceTimersByTime(400)
+    expect(callsTo('/api/workspace/tabs/order')).toHaveLength(1)
+    expect(post).toHaveBeenCalledWith('/api/workspace/tabs/order',
+      expect.objectContaining({ ids: [t1.id, t2.id], active_id: t1.id }))
+    vi.useRealTimers()
   })
 
   it('closeTab:关闭后激活相邻页签并删除', () => {
@@ -44,9 +69,9 @@ describe('workspace store', () => {
     vi.clearAllMocks()
     ws.setContent(tab.id, 'SELECT 1')
     ws.setContent(tab.id, 'SELECT 12')   // 连续输入只保留最后一次
-    expect(post).not.toHaveBeenCalled()
+    expect(callsTo('/api/workspace/tabs/save')).toHaveLength(0)
     vi.advanceTimersByTime(900)
-    expect(post).toHaveBeenCalledTimes(1)
+    expect(callsTo('/api/workspace/tabs/save')).toHaveLength(1)
     expect(post).toHaveBeenCalledWith('/api/workspace/tabs/save',
       expect.objectContaining({ content: 'SELECT 12' }))
     vi.useRealTimers()
@@ -78,7 +103,7 @@ describe('workspace store', () => {
     ws.setContent(tab.id, 'SELECT 1')
     ws.setContent(tab.id, 'SELECT 2')
     vi.advanceTimersByTime(900)
-    expect(post).toHaveBeenCalledTimes(1)
+    expect(callsTo('/api/workspace/tabs/save')).toHaveLength(1)
     expect(post).toHaveBeenCalledWith('/api/workspace/tabs/save',
       expect.objectContaining({ content: 'SELECT 2' }))
     vi.useRealTimers()
@@ -108,5 +133,21 @@ describe('workspace store', () => {
     await ws.load()
     expect(ws.tabs).toHaveLength(2)
     expect(ws.activeId).toBe('b')
+  })
+
+  it('load:合并本地已建但服务端还没有的页签,并补一次持久化', async () => {
+    const ws = useWorkspaceStore()
+    const local = ws.addTab({ type: 'sql', connection_id: 'c9' })   // load 在途时新建的页签
+    vi.clearAllMocks()
+    vi.mocked(get).mockResolvedValueOnce({ items: [
+      { id: 'a', type: 'sql', title: 'SQL-1', connection_id: null, context: {},
+        content: '', sort: 0, is_active: true },
+    ] })
+    await ws.load()
+    // 服务端页签 + 本地页签(直接赋值会让本地页签凭空消失)
+    expect(ws.tabs.map(t => t.id)).toEqual(['a', local.id])
+    expect(ws.activeId).toBe(local.id)            // 用户当前停留的本地页签不被抢走
+    expect(post).toHaveBeenCalledWith('/api/workspace/tabs/save',
+      expect.objectContaining({ id: local.id }))
   })
 })

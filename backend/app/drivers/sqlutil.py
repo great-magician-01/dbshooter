@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import datetime
 import decimal
+import math
 import re
 import uuid
 from collections.abc import Mapping, Set
 from typing import Any
 
-from .base import READONLY_PREFIXES
+from .base import READONLY_PREFIXES, first_keyword
 
 # PG dollar-quoting 开界定符:$$ 或 $tag$(函数体常用,内含分号不可拆)
 _DOLLAR_OPEN = re.compile(r'\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$')
@@ -86,8 +87,7 @@ def split_sql(script: str, *, backslash_escapes: bool = True) -> list[str]:
 
 
 def is_query(stmt: str) -> bool:
-    first = stmt.lstrip(' \t\r\n(-').split(None, 1)[0].lower() if stmt.strip() else ''
-    return first in READONLY_PREFIXES
+    return first_keyword(stmt) in READONLY_PREFIXES
 
 
 def jsonable(v: Any) -> Any:
@@ -96,9 +96,14 @@ def jsonable(v: Any) -> Any:
     DB-API/驱动会返回 datetime / Decimal / UUID / bytes 等原生对象,
     WS 通道走原生 json.dumps 会直接抛 "not JSON serializable",
     统一在驱动出口转成字符串,让 WS / REST / CSV 各通道表示一致。
+    非有限浮点(inf/-inf/nan)转字符串:WS 侧 json.dumps 会产出非法 JSON
+    (Infinity/NaN 字面量),浏览器 JSON.parse 直接抛错导致查询悬死;
+    REST 侧 allow_nan=False 则整包 500。
     """
-    if v is None or isinstance(v, (str, int, float, bool)):
+    if v is None or isinstance(v, (str, int, bool)):
         return v
+    if isinstance(v, float):
+        return v if math.isfinite(v) else str(v)   # 'inf' / '-inf' / 'nan'
     if isinstance(v, (datetime.datetime, datetime.date, datetime.time,
                       datetime.timedelta, decimal.Decimal, uuid.UUID)):
         return str(v)

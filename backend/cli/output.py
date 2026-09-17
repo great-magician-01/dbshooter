@@ -75,9 +75,14 @@ def _cell(v: Any, null: str = '') -> str:
     return str(v)
 
 
+def escape_ctrl(text: str) -> str:
+    """控制字符转义成可见的 \\xNN(不剥原始数据,但终端状态不可被库数据里的 ESC 序列改写)。"""
+    return _CTRL_RE.sub(lambda m: f'\\x{ord(m.group()):02x}', text)
+
+
 def _plain(v: Any, null: str = '') -> str:
-    """单元格纯文本:控制字符转义成可见的 \\xNN(不剥原始数据,但终端状态不可被改)。"""
-    return _CTRL_RE.sub(lambda m: f'\\x{ord(m.group()):02x}', _cell(v, null))
+    """单元格纯文本:先转成文本再转义控制字符。"""
+    return escape_ctrl(_cell(v, null))
 
 
 def _text(v: Any, null: str = '') -> Text:
@@ -114,15 +119,34 @@ def _jsonl(result: dict[str, Any]) -> list[str]:
     return [json.dumps(d, ensure_ascii=False, default=str) for d in items]
 
 
+# Excel 当公式执行的引导字符(与服务端 /api/query/export 的 _csv_safe 保持同一集合):
+# \t / \r 是"引导"写法——Excel 会跳过它们继续把后面的 = + - @ 当公式解析
+_FORMULA_LEADS = ('=', '+', '-', '@', '\t', '\r')
+
+
+def _csv_cell(v: Any) -> str:
+    """CSV 单元格:公式注入防护 + 文本化。
+
+    字符串值以公式引导字符开头时加 ' 前缀中和,口径与服务端 _csv_safe 一致
+    (两者改一处必须同步改另一处)。
+    只对 str 判定:数值 -5 文本化后首字符同样是 '-',但它不是公式,加前缀反而改坏数据。
+    """
+    s = _cell(v)
+    if isinstance(v, str) and s[:1] in _FORMULA_LEADS:
+        return "'" + s
+    return s
+
+
 def write_results_csv(results: list[dict[str, Any]], out: TextIO) -> int:
     """全部含数据的结果集逐个写 CSV(各自带头行;无列结构的按 JSONL),返回数据行数。"""
     n = 0
     w = csv.writer(out)
     for r in data_results(results):
         if r.get('columns'):
-            w.writerow([c['name'] for c in r['columns']])
+            # 列名同样按数据处理:别名可以是 "=1+1" 这种公式样式,不中和一样会被 Excel 执行
+            w.writerow([_csv_cell(c['name']) for c in r['columns']])
             for row in r.get('rows', []):
-                w.writerow([_cell(v) for v in row])
+                w.writerow([_csv_cell(v) for v in row])
                 n += 1
         else:
             for line in _jsonl(r):

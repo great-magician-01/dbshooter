@@ -52,23 +52,31 @@ class QueryService:
         self._queries[qid] = ctx
 
         async def run() -> None:
+            # emit 只负责通知,客户端断开不该带走历史落库;也不允许异常逃出任务
+            # (任务异常无人取回会刷 "Task exception was never retrieved")
+            async def safe_emit(ev: dict[str, Any]) -> None:
+                try:
+                    await emit(ev)
+                except Exception:
+                    pass
+
             try:
                 driver = await manager.get(conn_id)
-                await emit({'event': 'query.started', 'data': {'query_id': qid}})
+                await safe_emit({'event': 'query.started', 'data': {'query_id': qid}})
                 results = await driver.execute(stmt, limit=BUFFER_CAP, schema=schema)
                 ctx.results = results
                 err = next((r.error for r in results if r.error), None)
                 ctx.status = 'error' if err else 'done'
                 first = ctx.first_rows
                 if first:
-                    await emit({'event': 'query.rows', 'data': {
+                    await safe_emit({'event': 'query.rows', 'data': {
                         'query_id': qid, 'columns': first.columns,
                         'rows': first.rows[:200], 'has_more': len(first.rows) > 200,
                         'truncated': first.truncated}})
                 elapsed = sum(r.elapsed_ms for r in results)
                 summary = [{'kind': r.kind, 'affected': r.affected, 'error': r.error}
                            for r in results]
-                await emit({'event': 'query.done' if not err else 'query.error', 'data': {
+                await safe_emit({'event': 'query.done' if not err else 'query.error', 'data': {
                     'query_id': qid, 'elapsed_ms': elapsed,
                     'row_count': len(first.rows) if first else 0,
                     'summary': summary, 'error': err}})
@@ -77,17 +85,18 @@ class QueryService:
             except QueryError as e:
                 ctx.status = 'error'
                 ctx.error = str(e)
-                await emit({'event': 'query.error', 'data': {'query_id': qid, 'error': str(e)}})
+                await safe_emit({'event': 'query.error', 'data': {'query_id': qid, 'error': str(e)}})
                 db.add_history(conn_id, stmt, 0, 0, 'error')
             except asyncio.CancelledError:
                 ctx.status = 'cancelled'
                 db.add_history(conn_id, stmt, 0, 0, 'cancelled')
-                await emit({'event': 'query.error',
-                            'data': {'query_id': qid, 'error': '已取消'}})
+                await safe_emit({'event': 'query.error',
+                                 'data': {'query_id': qid, 'error': '已取消'}})
             except Exception as e:  # 驱动级未预期错误
                 ctx.status = 'error'
                 ctx.error = str(e)
-                await emit({'event': 'query.error', 'data': {'query_id': qid, 'error': str(e)}})
+                await safe_emit({'event': 'query.error', 'data': {'query_id': qid, 'error': str(e)}})
+                db.add_history(conn_id, stmt, 0, 0, 'error')
             finally:
                 asyncio.get_running_loop().call_later(
                     TTL_SECONDS, lambda: self._queries.pop(qid, None))
@@ -102,23 +111,30 @@ class QueryService:
         limit = max(limit, 1)
         first = ctx.first_rows
         if not first:
-            return {'columns': [], 'rows': [], 'has_more': False, 'status': ctx.status}
+            return {'columns': [], 'rows': [], 'has_more': False,
+                    'truncated': False, 'status': ctx.status}
         rows = first.rows[offset:offset + limit]
+        # has_more 只表示缓冲区内还有未拉取的行;驱动层截断(BUFFER_CAP)单独用
+        # truncated 表达 —— 旧实现把两者 or 在一起,截断后"加载更多"永远返回空页
         return {'columns': first.columns, 'rows': rows,
-                'has_more': offset + limit < len(first.rows) or first.truncated,
+                'has_more': offset + limit < len(first.rows),
+                'truncated': first.truncated,
                 'total_buffered': len(first.rows), 'status': ctx.status}
 
     async def cancel(self, query_id: str) -> None:
         ctx = self.get(query_id)
-        if ctx.task is None or ctx.task.done():
+        task = ctx.task
+        if task is None or task.done():
             return  # 已结束的查询无需取消,也不应为此断开健康连接
-        try:
-            driver = await manager.get(ctx.conn_id)
-            await driver.cancel()
-        except Exception:
-            pass  # 取消失败降级:直接杀任务断连
-        ctx.task.cancel()
-        await manager.evict(ctx.conn_id)
+        driver = manager.get_cached(ctx.conn_id)
+        if driver is not None:
+            try:
+                await driver.cancel()
+            except Exception:
+                pass  # 取消失败降级:直接杀任务断连
+        # cancel() 返回 False = 任务在竞态窗口内刚好完成,此时不应 evict 健康连接
+        if task.cancel():
+            await manager.evict(ctx.conn_id)
 
 
 query_service = QueryService()

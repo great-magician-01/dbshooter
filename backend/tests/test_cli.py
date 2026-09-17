@@ -638,3 +638,332 @@ def test_error_and_cells_escape_control_chars(capsys):
     out = capsys.readouterr().out
     assert '\x1b' not in out and '\x07' not in out
     assert '\\x1b[31mred' in out and '\\x07' in out
+
+
+# ── 三轮审查修复回归 ──
+
+def test_csv_formula_injection_prefixed():
+    """CSV 公式注入防护:字符串以 =/+/-/@ 开头时加 ' 前缀(与服务端 _csv_safe 同口径)。"""
+    # 前缀集合的权威定义在服务端 backend/app/api/query.py::_csv_safe,改一处要同步另一处
+    import io
+
+    from backend.cli.output import write_results_csv
+    results = [{'kind': 'rows', 'columns': [{'name': '=cmd', 'type': ''}],
+                'rows': [['=1+1'], ['+A1'], ['-2+3'], ['@SUM(A1)'], ['ok']],
+                'elapsed_ms': 1}]
+    buf = io.StringIO()
+    assert write_results_csv(results, buf) == 5
+    lines = buf.getvalue().splitlines()
+    assert lines[0] == "'=cmd"                       # 列名同样按数据处理
+    assert lines[1:] == ["'=1+1", "'+A1", "'-2+3", "'@SUM(A1)", 'ok']
+
+
+def test_csv_tab_cr_leading_value_prefixed():
+    """\t / \r 引导的单元格 Excel 会跳过引导继续解析公式,前缀集须与服务端 _csv_safe 同步。"""
+    import csv
+    import io
+
+    from backend.cli.output import write_results_csv
+    results = [{'kind': 'rows', 'columns': [{'name': '\t=列名', 'type': ''}],
+                'rows': [['\t=cmd'], ['\r@x'], ['\ttext']]}]
+    buf = io.StringIO()
+    write_results_csv(results, buf)
+    rows = list(csv.reader(io.StringIO(buf.getvalue())))
+    assert rows[0] == ["'\t=列名"]
+    assert rows[1] == ["'\t=cmd"] and rows[2] == ["'\r@x"]
+    assert rows[3] == ["'\ttext"]      # 服务端同口径:只看首字符,不做语义判断
+
+
+def test_csv_negative_number_not_prefixed():
+    """数值 -5 文本化后首字符也是 '-',但它不是公式,加前缀会改坏数据。"""
+    import io
+
+    from backend.cli.output import write_results_csv
+    results = [{'kind': 'rows', 'columns': [{'name': 'n', 'type': ''}],
+                'rows': [[-5], [-0.5], [{'a': 1}]]}]
+    buf = io.StringIO()
+    write_results_csv(results, buf)
+    assert buf.getvalue().splitlines()[1:] == ['-5', '-0.5', '"{""a"": 1}"']
+
+
+def test_query_csv_injection_through_cli(monkeypatch, tmp_path):
+    """--format csv 与 -o 两条路径都要中和公式(Excel 直开可执行的风险)。"""
+    import csv
+    import io
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == '/api/connections':
+            return httpx.Response(200, json={'items': [_STUB_CONN]})
+        return httpx.Response(200, json={'results': [
+            {'kind': 'rows', 'columns': [{'name': 'v', 'type': ''}],
+             'rows': [['=HYPERLINK("http://evil","点我")'], ['text']], 'elapsed_ms': 1}]})
+
+    cli = _stub_cli(monkeypatch, handler)
+    r = cli.invoke(app, ['query', 'stub-conn', 'q', '--format', 'csv'])
+    assert r.exit_code == 0, r.output
+    assert '=HYPERLINK' in r.output and "'=HYPERLINK" in r.output
+    out = tmp_path / 'inj.csv'
+    r = cli.invoke(app, ['query', 'stub-conn', 'q', '-o', str(out)])
+    assert r.exit_code == 0, r.output
+    rows = list(csv.reader(io.StringIO(out.read_text(encoding='utf-8-sig'))))
+    assert rows[0] == ['v'] and rows[1][0].startswith("'=HYPERLINK") and rows[2] == ['text']
+
+
+def test_ws_invalid_port_no_traceback(monkeypatch):
+    """端口写成非数字:parse_uri 抛 ValueError(不是 WebSocketException 子类),转 CliError。"""
+    import backend.cli.wsclient as wsc
+
+    def boom(*args, **kwargs):
+        raise ValueError("Port could not be cast to integer value as '57l8'")
+
+    monkeypatch.setattr(wsc, '_ws_connect', boom)
+    with pytest.raises(CliError) as ei:
+        list(wsc.stream_ai_events('ws://h:57l8/ws?token=SECRET', {}, 1.0))
+    assert ei.value.code == EXIT_UNREACHABLE
+    assert '57l8' in ei.value.message and 'SECRET' not in ei.value.message
+
+
+def test_ws_real_parse_uri_value_error(monkeypatch):
+    """不桩化 _ws_connect,直接喂真地址:websockets 内部同样以 ValueError 收场。"""
+    import backend.cli.wsclient as wsc
+    with pytest.raises(CliError) as ei:
+        list(wsc.stream_ai_events('ws://127.0.0.1:57l8/ws?token=SECRET', {}, 1.0))
+    assert ei.value.code == EXIT_UNREACHABLE
+    assert 'SECRET' not in ei.value.message
+
+
+def test_ws_exception_message_token_masked(monkeypatch):
+    """WebSocketException 的文本可能带原始 uri(InvalidURI 等),必须脱敏后再打。"""
+    from websockets.exceptions import InvalidURI
+
+    import backend.cli.wsclient as wsc
+
+    def boom(*args, **kwargs):
+        # websockets 17 的 InvalidURI 会把 uri 原样写进 __str__(真实路径:scheme 不是 ws/wss)
+        raise InvalidURI('ws://h:1/ws?token=SECRET', "scheme isn't ws or wss")
+
+    monkeypatch.setattr(wsc, '_ws_connect', boom)
+    with pytest.raises(CliError) as ei:
+        list(wsc.stream_ai_events('ws://h:1/ws?token=SECRET', {}, 1.0))
+    assert ei.value.code == EXIT_UNREACHABLE
+    assert 'SECRET' not in ei.value.message and '?token' not in ei.value.message
+
+
+def test_ws_refused_masks_token(monkeypatch):
+    """连不上服务时提示里的地址同样不能带查询串。"""
+    import backend.cli.wsclient as wsc
+
+    def boom(*args, **kwargs):
+        raise ConnectionRefusedError('refused')
+
+    monkeypatch.setattr(wsc, '_ws_connect', boom)
+    with pytest.raises(CliError) as ei:
+        list(wsc.stream_ai_events('ws://h:1/ws?token=SECRET', {}, 1.0))
+    assert ei.value.code == EXIT_UNREACHABLE
+    assert 'ws://h:1/ws' in ei.value.message and 'SECRET' not in ei.value.message
+
+
+def test_invalid_server_url_exit1_no_traceback():
+    """-s 端口非数字:httpx.InvalidURL 不是 HTTPError 子类,须转中文错误、退出码 1、无 traceback。"""
+    r = CliRunner().invoke(app, ['-s', 'http://127.0.0.1:57l8', 'health'])
+    assert r.exit_code == 1
+    assert '无效的服务地址' in r.output and 'Traceback' not in r.output
+
+
+def test_mask_url_strips_query_and_userinfo():
+    """报错信息里的地址脱敏:REST 与 WS 共用 errors.mask_url,剥查询串(token)与 userinfo。"""
+    from backend.cli.errors import mask_url
+    assert mask_url('http://h:1/?token=SECRET&a=1') == 'http://h:1/'
+    assert mask_url('http://u:p@h:1/dbs') == 'http://h:1/dbs'
+    assert mask_url('ws://h:1/ws?token=SECRET') == 'ws://h:1/ws'
+    assert mask_url('http://h:1/dbs') == 'http://h:1/dbs'      # 无敏感段时原样
+    assert mask_url('http://127.0.0.1:5718') == 'http://127.0.0.1:5718'
+
+
+def test_rest_unreachable_hint_masks_token():
+    """-s 把令牌写进 URL 且服务连不上:提示里的地址不得带 token(退出码 3、无 traceback)。"""
+    r = CliRunner().invoke(app, ['-s', 'http://127.0.0.1:1/?token=SECRET', 'health'])
+    assert r.exit_code == EXIT_UNREACHABLE
+    assert 'Traceback' not in r.output
+    assert 'SECRET' not in r.output and 'token' not in r.output
+    assert 'http://127.0.0.1:1' in r.output
+
+
+def test_rest_unreachable_hint_masks_userinfo():
+    """userinfo 形式(http://user:pass@host)的凭据同样不能进错误信息。"""
+    def handler(req: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError('refused')
+
+    api = ApiClient(httpx.Client(transport=httpx.MockTransport(handler),
+                                 base_url='http://user:pa55@h:1/'))
+    with pytest.raises(CliError) as ei:
+        api.get('/api/health')
+    assert ei.value.code == EXIT_UNREACHABLE
+    assert 'pa55' not in ei.value.message and '@' not in ei.value.message
+
+
+def test_api_client_invalid_url_at_request_time(monkeypatch):
+    """请求期才抛出的 InvalidURL(ApiClient 层)同样转成 CliError。"""
+    def handler(req: httpx.Request) -> httpx.Response:
+        raise httpx.InvalidURL("Invalid port: '57l8'")
+
+    transport = httpx.MockTransport(handler)
+    api = ApiClient(httpx.Client(transport=transport, base_url='http://stub'))
+    with pytest.raises(CliError) as ei:
+        api.get('/api/health')
+    assert '无效的服务地址' in ei.value.message
+
+
+def test_resolve_exact_name_beats_id_prefix(cli, sqlite_db):
+    """名称恰好是另一连接 id 前缀时,必须解析到同名连接(精确名称 > id 前缀)。"""
+    import json
+    other = _add_sqlite(cli, sqlite_db)
+    items = json.loads(cli.invoke(app, ['conn', 'list', '--format', 'json']).output)
+    aid = next(c['id'] for c in items if c['name'] == other)
+    tricky = aid[:8]                            # 同时是 other 的唯一 id 前缀
+    r = cli.invoke(app, ['conn', 'add', '--name', tricky, '--type', 'sqlite',
+                         '--param', f'path={sqlite_db}'])
+    assert r.exit_code == 0, r.output
+    r = cli.invoke(app, ['conn', 'update', tricky, '--name', f'{tricky}-改名'])
+    assert r.exit_code == 0, r.output
+    assert f'已更新 {tricky} ' in r.output       # 改的是同名连接,不是 id 前缀命中的 other
+    after = json.loads(cli.invoke(app, ['conn', 'list', '--format', 'json']).output)
+    renamed = next(c for c in after if c['name'] == f'{tricky}-改名')
+    assert renamed['id'] != aid
+    assert any(c['id'] == aid and c['name'] == other for c in after)   # other 未被误改
+
+
+def test_resolve_by_name_prefix(cli, sqlite_db):
+    """唯一名称前缀可用:id 前缀没命中时退化到名称前缀。"""
+    import uuid
+    base = f'npfx-{uuid.uuid4().hex[:6]}'
+    _add_sqlite(cli, sqlite_db, name=f'{base}-a', exact=True)
+    r = cli.invoke(app, ['conn', 'test', base])
+    assert r.exit_code == 0, r.output
+    assert '连接成功' in r.output
+
+
+def test_resolve_name_prefix_ambiguous_lists_candidates(cli, sqlite_db):
+    """名称前缀命中多个:报错并列出候选,不能静默挑一个。"""
+    import uuid
+    base = f'amb-{uuid.uuid4().hex[:6]}'
+    _add_sqlite(cli, sqlite_db, name=f'{base}-1', exact=True)
+    _add_sqlite(cli, sqlite_db, name=f'{base}-2', exact=True)
+    r = cli.invoke(app, ['conn', 'test', base])
+    assert r.exit_code == 1
+    assert '匹配到多个' in r.output
+    assert f'{base}-1' in r.output and f'{base}-2' in r.output
+
+
+def test_tree_and_ddl_escape_control_chars(monkeypatch):
+    """tree/ddl 的库名、DDL 文本里的 ESC 序列要转义(与 conn list/history 同口径)。"""
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == '/api/connections':
+            return httpx.Response(200, json={'items': [_STUB_CONN]})
+        if req.url.path.endswith('/metadata'):
+            return httpx.Response(200, json={'items': [
+                {'label': '\x1b[31mtbl', 'path': 'tbl', 'has_children': False}]})
+        return httpx.Response(200, json={'ddl': 'CREATE TABLE "t"\n(\x1b]0;x\x07 v INT)'})
+
+    cli = _stub_cli(monkeypatch, handler)
+    r = cli.invoke(app, ['tree', 'stub-conn'])
+    assert r.exit_code == 0, r.output
+    assert '\x1b' not in r.output and '\x07' not in r.output
+    assert '\\x1b[31mtbl' in r.output
+    r = cli.invoke(app, ['ddl', 'stub-conn', 't'])
+    assert r.exit_code == 0, r.output
+    assert '\x1b' not in r.output and '\x07' not in r.output
+    assert '\\x1b]0;x\\x07' in r.output and '\n' in r.output   # 多行结构不被破坏
+
+
+def test_query_stdin_gbk(cli, sqlite_db):
+    """--stdin 传 GBK 字节:utf-8 严格解码失败后回退 gbk,不能留下替换字符。"""
+    name = _add_readonly_sqlite(cli, sqlite_db)
+    r = cli.invoke(app, ['query', name, '--stdin', '--format', 'raw'],
+                   input="select name from users where city='上海'".encode('gbk'))
+    assert r.exit_code == 0, r.output
+    assert '张三' in r.output and '�' not in r.output
+
+
+def test_query_stdin_invalid_encoding(cli, sqlite_db):
+    """GBK 也解不开的字节:中文报错 + 退出码 1,不是裸 traceback。"""
+    name = _add_readonly_sqlite(cli, sqlite_db)
+    r = cli.invoke(app, ['query', name, '--stdin'], input=b'\xff\xfe\x00\x01\x80abc')
+    assert r.exit_code == 1
+    assert '编码' in r.output and 'Traceback' not in r.output
+
+
+def test_query_out_affected_only_writes_empty_file(cli, sqlite_conn_id, tmp_path):
+    """-o 但语句没有结果集(纯 insert):写出空文件 + stderr 提示 + 退出码 0。
+
+    必须落一个 0 字节文件:否则 `dbs query … -o out.csv && cat out.csv` 会读到上一次的陈旧内容。
+    """
+    out = tmp_path / 'none.csv'
+    out.write_text('stale,data\n', encoding='utf-8')     # 预置陈旧文件,验证会被截断
+    r = cli.invoke(app, ['query', sqlite_conn_id,
+                         "insert into users(name) values ('out-aff')", '-o', str(out)])
+    assert r.exit_code == 0, r.output
+    assert '无结果集' in r.output and '空文件' in r.output and '影响行数: 1' in r.output
+    assert out.exists() and out.read_bytes() == b''      # 陈旧内容已被截断
+    # 出错时仍然按业务失败退出(不能把真失败吞成 0)
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select * from nope', '-o', str(out)])
+    assert r.exit_code == 1
+    assert 'nope' in r.output
+
+
+def test_history_limit_local_validation(cli):
+    """history 的 limit 超过服务端 500:本地报错并点明服务端上限。"""
+    r = cli.invoke(app, ['history', '--limit', '600'])
+    assert r.exit_code == 1
+    assert '1~500' in r.output and '服务端上限 500' in r.output
+    r = cli.invoke(app, ['history', '--limit', '0'])
+    assert r.exit_code == 1
+
+
+def test_ai_ask_ctrl_c_cleans_session(cli, sqlite_conn_id, monkeypatch):
+    """Ctrl+C(KeyboardInterrupt)中断:自动新建的孤儿会话同样要删掉。"""
+    import json
+
+    import backend.cli.commands.ai as ai_cmd
+
+    def interrupt(url, payload, timeout):
+        raise KeyboardInterrupt
+        yield   # 生成器占位:异常在首次迭代时抛出
+
+    monkeypatch.setattr(ai_cmd, 'stream_ai_events', interrupt)
+    r = cli.invoke(app, ['ai', 'ask', sqlite_conn_id, '被中断的会话问题'])
+    assert r.exit_code != 0   # click 把 KeyboardInterrupt 归一成 130(SIGINT 约定),不锁死具体值
+    sessions = json.loads(cli.invoke(app, ['ai', 'sessions', 'list', '--format', 'json']).output)
+    assert not any(s['title'].startswith('被中断的会话问题') for s in sessions)
+
+
+def test_serve_defaults_to_localhost(monkeypatch):
+    """serve 默认只监听本机(--host / DBSHOOTER_HOST 优先)。"""
+    import uvicorn
+    captured: dict = {}
+    monkeypatch.setattr(uvicorn, 'run', lambda *a, **k: captured.update(k))
+    monkeypatch.delenv('DBSHOOTER_HOST', raising=False)
+    r = CliRunner().invoke(app, ['serve'])
+    assert r.exit_code == 0, r.output
+    assert captured['host'] == '127.0.0.1'
+    monkeypatch.setenv('DBSHOOTER_HOST', '0.0.0.0')
+    r = CliRunner().invoke(app, ['serve'])
+    assert r.exit_code == 0, r.output
+    assert captured['host'] == '0.0.0.0'
+
+
+def test_serve_exposed_without_token_warns(monkeypatch):
+    """监听非本机地址且没设令牌:启动信息要提示风险与设置方法。"""
+    import uvicorn
+    captured: dict = {}
+    monkeypatch.setattr(uvicorn, 'run', lambda *a, **k: captured.update(k))
+    monkeypatch.setenv('DBSHOOTER_HOST', '0.0.0.0')
+    monkeypatch.delenv('DBSHOOTER_TOKEN', raising=False)
+    r = CliRunner().invoke(app, ['serve'])
+    assert r.exit_code == 0, r.output
+    assert 'DBSHOOTER_TOKEN' in r.output and '警告' in r.output
+    # 已设令牌时只提示已保护,不再吓人
+    monkeypatch.setenv('DBSHOOTER_TOKEN', 'tk')
+    r = CliRunner().invoke(app, ['serve'])
+    assert r.exit_code == 0, r.output
+    assert '已启用令牌校验' in r.output

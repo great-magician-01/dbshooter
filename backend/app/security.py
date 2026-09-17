@@ -19,9 +19,15 @@ _fernet: Fernet | None = None
 
 
 def token_matches(provided: str | None) -> bool:
-    """访问令牌校验(恒时比较,防时序侧信道)。未启用令牌时恒 False。"""
+    """访问令牌校验(恒时比较,防时序侧信道)。未启用令牌时恒 False。
+
+    两边都先编码成 bytes:compare_digest 的 str 重载要求 ASCII,
+    客户端发来非 ASCII 字节(经 latin-1 解码成 str)会抛 TypeError 变成 500。
+    """
     tok = config.ACCESS_TOKEN
-    return tok is not None and provided is not None and hmac.compare_digest(provided, tok)
+    if tok is None or provided is None:
+        return False
+    return hmac.compare_digest(provided.encode('utf-8'), tok.encode('utf-8'))
 
 
 def _load_key() -> bytes:

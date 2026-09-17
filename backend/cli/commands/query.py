@@ -12,7 +12,7 @@ import typer
 
 from ..errors import CliError, handle_cli_error
 from ..output import (FMT_CHOICES, data_results, make_console, print_json, print_results,
-                      print_rows, resolve_format, resolve_list_format, write_results_csv)
+                      print_rows, resolve_format, resolve_list_format, warn, write_results_csv)
 from ..resolve import resolve_conn
 from ..state import get_state
 
@@ -21,6 +21,29 @@ _FMT_OPT = typer.Option(None, '--format', help=f'输出格式: {"/".join(FMT_CHO
 # 与服务端 /api/query/execute、/api/query/export 的 limit 校验保持一致,提前本地报错
 QUERY_LIMIT_MAX = 5000
 EXPORT_LIMIT_MAX = 50000
+# 服务端 GET /api/query/history 是 min(limit, 500):超了只会静默截断,本地先拦
+HISTORY_LIMIT_MAX = 500
+
+
+def _read_stdin() -> str:
+    """读管道语句:utf-8 严格解码,失败回退 GBK(与 _read_stmt_file 同一口径)。
+
+    必须绕到 buffer 拿原始字节:main._fix_stdio 已把 stdin 重配成 utf-8 + errors=replace,
+    文本层读 GBK 内容只会得到替换字符,永远退化不回 gbk。
+    管道带 BOM(Windows "UTF-8 with BOM" 存盘/重定向)时首词会带上 BOM(﻿),变成
+    ﻿SELECT,服务端只读拦截按首词判断会误判 → 与 _read_stmt_file 的 utf-8-sig 对齐,剥掉。
+    """
+    buf = getattr(sys.stdin, 'buffer', None)
+    if buf is None:
+        # 测试/嵌入式场景替换过 stdin 且没有字节层:退回文本读取(仍剥 BOM)
+        return sys.stdin.read().lstrip('﻿')
+    raw: bytes = buf.read()
+    for enc in ('utf-8', 'gbk'):
+        try:
+            return raw.decode(enc).lstrip('﻿')
+        except UnicodeDecodeError:
+            continue
+    raise CliError('无法识别标准输入编码(支持 UTF-8/GBK)')
 
 
 def _read_stmt(stmt: str | None, file: str | None, use_stdin: bool) -> str:
@@ -30,18 +53,16 @@ def _read_stmt(stmt: str | None, file: str | None, use_stdin: bool) -> str:
     if file is not None:
         return _read_stmt_file(file)
     if use_stdin:
-        # 管道带 BOM(Windows "UTF-8 with BOM" 存盘/重定向)时首词会带上 BOM(\ufeff),变成 \ufeffSELECT,
-        # 服务端只读拦截按首词判断会误判 → 与 _read_stmt_file 的 utf-8-sig 对齐,先剥掉
-        return sys.stdin.read().lstrip('\ufeff')
+        return _read_stdin()
     if not stmt or not stmt.strip():
         raise CliError('缺少语句:直接跟在 CONN 后,或用 -f 文件 / --stdin 管道')
     return stmt
 
 
-def _check_limit(limit: int, max_: int) -> int:
-    """本地校验 limit 上限:超限直接给中文报错,不要等服务端 422。"""
+def _check_limit(limit: int, max_: int, note: str = '') -> int:
+    """本地校验 limit 上限:超限直接给中文报错,不要等服务端 422 或静默截断。"""
     if not 1 <= limit <= max_:
-        raise CliError(f'--limit 需在 1~{max_} 之间: {limit}')
+        raise CliError(f'--limit 需在 1~{max_} 之间: {limit}{note}')
     return limit
 
 
@@ -79,8 +100,19 @@ def query(ctx: typer.Context,
     if out is not None:
         # 与 --format csv 同一渲染口径:全部含数据的结果集都落盘(含 redis command 结果)
         if not data_results(results):
-            err = next((x.get('error') for x in results if x.get('error')), '查询无结果集')
-            raise CliError(str(err))
+            err = next((x.get('error') for x in results if x.get('error')), None)
+            if err:
+                raise CliError(str(err))
+            # 纯写语句(全部 affected)没有结果集:仍要把文件写空(而不是不写)——
+            # 否则 `dbs query … -o out.csv && cat out.csv` 会读到上一次留下的陈旧数据。
+            # 提示走 stderr,退出码 0(语句本身执行成功,不算失败)
+            aff = [str(x['affected']) for x in results
+                   if x.get('kind') == 'affected' and x.get('affected') is not None]
+            extra = f"(影响行数: {', '.join(aff)})" if aff else ''
+            with open(out, 'w', encoding='utf-8-sig', newline=''):   # 仅截断:0 字节
+                pass
+            warn(f'无结果集,已写出空文件{extra}: {out}')
+            return
         with open(out, 'w', encoding='utf-8-sig', newline='') as f:  # BOM:Excel 直开不乱码
             n = write_results_csv(results, f)
         typer.echo(f'已导出 {n} 行 → {out}')
@@ -125,7 +157,10 @@ def history(ctx: typer.Context,
     """查询历史(服务端记录,与 Web 端共享)。"""
     st = get_state(ctx)
     client = st.client()
-    items: list[dict[str, Any]] = client.get('/api/query/history', limit=limit)['items']
+    items: list[dict[str, Any]] = client.get(
+        '/api/query/history',
+        limit=_check_limit(limit, HISTORY_LIMIT_MAX,
+                           f'(history 服务端上限 {HISTORY_LIMIT_MAX},超出会被静默截断)'))['items']
     if resolve_list_format(fmt) == 'json':
         print_json(items)
         return

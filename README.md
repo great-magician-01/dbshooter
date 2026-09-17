@@ -69,7 +69,7 @@ npm run dev                     # http://127.0.0.1:5173,已代理 /api 与 /ws �
 `dbs` 是现有 REST/WS 接口的薄客户端(方案见 `docs/02-CLI设计方案.md`),适合脚本与管道场景:
 
 ```bash
-# 仓库内直接用(pip install . 后获得 dbs 命令;Docker 镜像内用 docker exec <c> python -m backend.cli)
+# 仓库内直接用(pip install . 后获得 dbs 命令;Docker 镜像内已装好,用 docker exec <容器> dbs ...)
 python -m backend.cli health
 python -m backend.cli conn add --name 本地 --type sqlite --param path=/tmp/a.db
 python -m backend.cli tree 本地 --depth 2
@@ -97,9 +97,18 @@ cd frontend && npm run typecheck         # 前端 vue-tsc
 ```bash
 docker build -t dbshooter .
 docker run -d -p 5718:5718 -v dbshooter-data:/data \
-  -e DBSHOOTER_SECRET=<随机字符串> dbshooter
+  -e DBSHOOTER_SECRET=<随机字符串> -e DBSHOOTER_TOKEN=<随机令牌> dbshooter
 # 打开 http://localhost:5718
+docker exec -it <容器> dbs conn list          # 镜像内自带 dbs 命令
 ```
+
+- 容器内以非 root 用户 `appuser`(UID 1000)运行,`/data` 已 chown 给它;用**宿主目录**挂载
+  `/data`(而非命名卷)时,需要 `chown 1000:1000` 该目录,否则非 root 进程写不了元数据库。
+- 容器内 `DBSHOOTER_HOST=0.0.0.0`(由 Dockerfile 设置)——`run.py` 默认只听 127.0.0.1,
+  端口映射要生效必须显式放开;既然对外监听,请一并设置 `DBSHOOTER_TOKEN`。
+- **反向代理必须透传原始 Host 头**:`/ws` 会校验浏览器 `Origin` 与 `Host` 同源(防跨站 WS),
+  代理改写 Host 会让浏览器的 WS 被以 4403 关闭(CLI 不带 Origin,不受影响)。nginx 至少要写
+  `proxy_set_header Host $host;` 并透传 `Upgrade`/`Connection` 头,Web 界面与 AI 流式才正常。
 
 ## 环境变量
 
@@ -108,11 +117,11 @@ docker run -d -p 5718:5718 -v dbshooter-data:/data \
 | `DBSHOOTER_DATA_DIR` | `./data` | 数据目录(内置 SQLite + secret.key) |
 | `DBSHOOTER_SECRET` | 自动生成 | 加密主密钥(连接密码 / API Key) |
 | `DBSHOOTER_TOKEN` | 空 | 设置后 `/api` 需 `Authorization: Bearer`,`/ws` 需 `?token=` |
-| `DBSHOOTER_PORT` / `DBSHOOTER_HOST` | `5718` / `0.0.0.0` | 监听地址 |
+| `DBSHOOTER_PORT` / `DBSHOOTER_HOST` | `5718` / `127.0.0.1` | 监听地址(Docker 镜像内为 `0.0.0.0`,由 Dockerfile 设置) |
 
 ## CI
 
-`.github/workflows/ci.yml`:push / PR 时并行执行 **backend**(setup-python 3.12 → pyright + pytest)与 **frontend**(npm ci → vitest → vite build)。
+`.github/workflows/ci.yml`:push / PR 时并行执行 **backend**(setup-python 3.12 → pyright + pytest + `pip check` + `pip install . && dbs --help` 打包冒烟)与 **frontend**(npm ci → vue-tsc 类型检查 → vitest → vite build),两者都绿后跑 **docker**(`docker build` + 镜像内 `dbs --help`)。
 
 ## 接口约定
 

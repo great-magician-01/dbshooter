@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 
 from .ai_tools import ToolResult
+from ..drivers.base import QueryError
 
 log = logging.getLogger('dbshooter.ai')
 
@@ -60,6 +61,26 @@ def extract_sql(text: str) -> str | None:
     return text.strip() if head in ('select', 'with') else None
 
 
+async def _sse_data_lines(resp: httpx.Response) -> AsyncIterator[str]:
+    """迭代 SSE 的 data 载荷。
+
+    部分兼容代理出错时返回 HTTP 200 + 纯 JSON 错误体(不是 SSE),逐行找
+    'data:' 会把整包静默丢弃、用户拿到空回答。流结束时若一条 SSE 都没收到
+    但响应有正文,抛出可读错误。
+    """
+    got_data = False
+    head: list[str] = []
+    async for line in resp.aiter_lines():
+        if not line.startswith('data:'):
+            if line.strip() and sum(len(h) for h in head) < 500:
+                head.append(line.strip())
+            continue
+        got_data = True
+        yield line[5:].strip()
+    if not got_data and head:
+        raise QueryError(f'provider 返回了非流式响应(疑似错误回包): {" ".join(head)[:300]}')
+
+
 async def stream_chat(provider: dict[str, Any],
                       messages: list[dict[str, Any]]) -> AsyncIterator[str]:
     """流式调用 OpenAI 兼容接口,逐 token 产出文本。"""
@@ -72,10 +93,7 @@ async def stream_chat(provider: dict[str, Any],
         async with client.stream('POST', f'{base}/chat/completions',
                                  json=payload, headers=headers) as resp:
             resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.startswith('data:'):
-                    continue
-                data = line[5:].strip()
+            async for data in _sse_data_lines(resp):
                 if data == '[DONE]':
                     break
                 try:
@@ -114,11 +132,13 @@ class ToolCallAcc:
         for tc in delta_tcs:
             idx = int(tc.get('index') or 0)
             slot = self._slots.setdefault(idx, {'id': '', 'name': '', 'arguments': ''})
+            # id/name 按协议只出现在首分片:赋值而非累加(累加会让重复携带的
+            # 兼容服务拼出 call_abccall_abc,回放 tool_call_id 对不上被 400)
             if tc.get('id'):
-                slot['id'] += str(tc['id'])
+                slot['id'] = str(tc['id'])
             fn = tc.get('function') or {}
             if fn.get('name'):
-                slot['name'] += str(fn['name'])
+                slot['name'] = str(fn['name'])
             if fn.get('arguments'):
                 slot['arguments'] += str(fn['arguments'])
 
@@ -151,10 +171,7 @@ async def stream_round(provider: dict[str, Any],
         async with client.stream('POST', f'{base}/chat/completions',
                                  json=payload, headers=headers) as resp:
             resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.startswith('data:'):
-                    continue
-                data = line[5:].strip()
+            async for data in _sse_data_lines(resp):
                 if data == '[DONE]':
                     break
                 try:
@@ -188,6 +205,7 @@ async def run_agent(provider: dict[str, Any],
     """
     trace: list[dict[str, Any]] = []
     emitted = False   # 是否已向外吐过 token
+    last_text = ''    # 最近一轮的正文(末轮仍要调工具时用于兜底返回)
 
     async def forward(t: str) -> None:
         nonlocal emitted
@@ -209,8 +227,12 @@ async def run_agent(provider: dict[str, Any],
                     await forward(t)
                 return ''.join(parts), trace
             raise
+        if text:
+            last_text = text
         if not calls:
             return text, trace
+        if round_no == MAX_TOOL_ROUNDS:
+            break   # 末轮已不带 tools 模型仍返回 tool_calls:不再回放,走循环后兜底
         # 回放 assistant 的 tool_calls(arguments 必须是 JSON 字符串),一轮内的
         # 调用全部执行完再发下一轮,否则 OpenAI 系会 400(tool_call_id 无对应 tool 消息)
         messages.append({'role': 'assistant', 'content': text or None,
@@ -237,7 +259,11 @@ async def run_agent(provider: dict[str, Any],
             trace.append(item)
             await on_tool(item)
             messages.append({'role': 'tool', 'tool_call_id': c.id, 'content': res.content})
-    return '', trace   # 理论不可达:末轮 tools=None,循环内必然返回
+    # 罕见但真实存在:部分代理会缓存 tools,末轮(已无 tools)仍返回 tool_calls。
+    # 有正文就返回正文,完全没有则明确报错 —— 绝不能把空回答当成功结果丢给前端。
+    if last_text:
+        return last_text, trace
+    raise QueryError('模型工具调用轮次超限,未能给出最终回答,请缩小问题范围后重试')
 
 
 async def test_provider(provider: dict[str, Any]) -> tuple[bool, str]:

@@ -1,6 +1,9 @@
 """连接管理 + 元数据 + DDL + Redis 键详情。"""
 from __future__ import annotations
 
+import sqlite3
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Query
 
 from .. import db
@@ -19,7 +22,10 @@ def list_connections():
 
 @router.post('')
 async def create_connection(body: ConnectionIn):
-    row = db.create_connection(body.model_dump())
+    try:
+        row = db.create_connection(body.model_dump())
+    except sqlite3.IntegrityError:
+        raise HTTPException(400, f'连接 id 已存在: {body.id}')
     return {'item': row}
 
 
@@ -44,9 +50,23 @@ async def delete_connection(body: IdIn):
 @router.post('/test')
 async def test_connection(body: ConnTestIn):
     if body.id:
-        cfg = db.get_connection(body.id)
-        if not cfg:
+        stored = db.get_connection(body.id)
+        if not stored:
             raise HTTPException(404, '连接不存在')
+        if body.config:
+            # id + config 同传:测的是表单里的未保存改动;密码/uri 留空(或脱敏态)
+            # 时回填已存值 —— 否则"编辑后不改密码点测试"必然拿空密码假失败
+            cfg: dict[str, Any] = body.config.model_dump()
+            if not cfg.get('password'):
+                cfg['password'] = stored['password']
+            params = dict(stored['params'])
+            for k, v in (cfg.get('params') or {}).items():
+                if k == 'uri' and (not isinstance(v, str) or not v or '***' in v):
+                    continue
+                params[k] = v
+            cfg['params'] = params
+        else:
+            cfg = stored
     elif body.config:
         cfg = body.config.model_dump()
     else:
@@ -73,7 +93,10 @@ async def metadata(cid: str, path: str = ''):
 @router.get('/{cid}/ddl')
 async def ddl(cid: str, tables: list[str] = Query([])):
     """tables 支持重复参数(?tables=a&tables=b)与逗号分隔(旧格式)两种传法。"""
-    driver = await manager.get(cid)
+    try:
+        driver = await manager.get(cid)
+    except QueryError as e:
+        raise HTTPException(404, str(e))
     flat = [s for t in tables for s in t.split(',') if s]
     text = await driver.ddl(flat)
     return {'ddl': text}
@@ -82,7 +105,10 @@ async def ddl(cid: str, tables: list[str] = Query([])):
 @router.get('/{cid}/key')
 async def redis_key_detail(cid: str, key: str, db_index: int = Query(0, alias='db')):
     """Redis 专用:键详情(TYPE/PTTL/按类型取值)。"""
-    driver = await manager.get(cid)
+    try:
+        driver = await manager.get(cid)
+    except QueryError as e:
+        raise HTTPException(404, str(e))
     if not isinstance(driver, RedisDriver):
         raise HTTPException(400, '该连接不是 Redis')
     if not key:

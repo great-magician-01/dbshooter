@@ -7,6 +7,8 @@ import type { Connection, ConnectionSave, MetaNode } from '@/types'
 
 export const useConnectionsStore = defineStore('connections', () => {
   const items = ref<Connection[]>([])
+  /** 元数据代次:连接增删改后 +1,TreeNode 据此丢弃已加载的子节点(否则树里还是旧结构) */
+  const metaVersion = ref(0)
   /** `${connId}|${path}` → 已加载的子节点 */
   const metaCache = ref<Map<string, MetaNode[]>>(new Map())
   /** `${connId}|${path}` → 在途请求(同一 path 未返回时不重复发) */
@@ -22,12 +24,16 @@ export const useConnectionsStore = defineStore('connections', () => {
     // 配置变了,该连接的全部元数据缓存作废
     for (const key of [...metaCache.value.keys()])
       if (key.startsWith(`${item.id}|`)) metaCache.value.delete(key)
+    metaVersion.value++
     await load()
     return item
   }
 
   async function remove(id: string) {
     await post('/api/connections/delete', { id })
+    for (const key of [...metaCache.value.keys()])
+      if (key.startsWith(`${id}|`)) metaCache.value.delete(key)
+    metaVersion.value++
     await load()
   }
 
@@ -49,5 +55,5 @@ export const useConnectionsStore = defineStore('connections', () => {
     return p
   }
 
-  return { items, load, save, remove, test, metadata }
+  return { items, metaVersion, load, save, remove, test, metadata }
 })

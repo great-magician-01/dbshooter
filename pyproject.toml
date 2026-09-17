@@ -13,15 +13,20 @@ dependencies = [
     "pydantic>=2.6",
     "aiosqlite>=0.20",
     "aiomysql>=0.2.0",
+    # aiomysql 兼容性钉版,原因见 requirements.txt 同名条目的注释
+    "PyMySQL>=1.2.3,<1.3.0",
     "asyncpg>=0.29",
     "redis>=5.0",
     "motor>=3.4",
+    # mongo 驱动直接 import bson,不能依赖 motor 的传递依赖,原因见 requirements.txt
+    "pymongo>=4",
     "cryptography>=42",
     "httpx>=0.27",
     "pyjson5>=1.6",
     "typer>=0.12",
     "rich>=13",
-    "websockets>=12",
+    # CLI 用了 15.0 才有的 proxy=None,原因见 requirements.txt
+    "websockets>=15",
 ]
 
 [project.scripts]
@@ -29,3 +34,5 @@ dbs = "backend.cli.main:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["backend"]
+# 测试目录不进 wheel:安装/镜像环境不需要 pytest 用例与测试数据
+exclude = ["backend/tests"]

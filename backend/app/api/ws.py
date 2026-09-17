@@ -15,8 +15,10 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import WebSocket, WebSocketDisconnect
+from starlette.datastructures import Headers
 
 from .. import config, db, security
 from ..drivers.base import DriverBase
@@ -27,9 +29,32 @@ from ..services.query_service import query_service
 
 log = logging.getLogger('dbshooter.ws')
 
+# 单条 SQL 文本上限(1 MiB):WS 消息体本身有 uvicorn ws_max_size 兜底,
+# 应用层再卡一道,避免巨型 payload 直接进驱动与历史表
+MAX_STMT_LEN = 1_000_000
+# 单 WS 连接的最大并发 handler 数,超出直接拒绝(背压,防单连接无限堆任务)
+MAX_WS_TASKS = 16
+# 心跳间隔:前端据此做半开连接检测(NAT/反代静默断链时浏览器不会派发 close)
+HEARTBEAT_SECONDS = 25
+
+
+def _origin_allowed(headers: Headers) -> bool:
+    """浏览器跨站 WebSocket 不受同源策略保护:校验 Origin 与 Host 同源,
+    防止恶意网页在用户浏览器里直连本机/内网的 DBShooter。
+    非浏览器客户端(CLI)不带 Origin,放行(令牌仍强制)。"""
+    origin = headers.get('origin')
+    if not origin:
+        return True
+    host = (headers.get('host') or '').rsplit(':', 1)[0].strip('[]').lower()
+    try:
+        ohost = (urlsplit(origin).hostname or '').lower()
+    except ValueError:
+        return False
+    return bool(host) and ohost == host
+
 
 async def _handle_query_execute(ws: WebSocket, req_id: str, payload: dict[str, Any],
-                                send_lock: asyncio.Lock) -> None:
+                                send_lock: asyncio.Lock, active_queries: set[str]) -> None:
     async def emit(ev: dict[str, Any]) -> None:
         async with send_lock:
             await ws.send_json({'id': req_id, **ev})
@@ -39,16 +64,27 @@ async def _handle_query_execute(ws: WebSocket, req_id: str, payload: dict[str, A
     if not conn_id or not stmt:
         await emit({'event': 'query.error', 'data': {'error': '缺少 conn_id 或 stmt'}})
         return
+    if len(str(stmt)) > MAX_STMT_LEN:
+        await emit({'event': 'query.error',
+                    'data': {'error': f'语句过长(上限 {MAX_STMT_LEN // 1_000_000} MiB)'}})
+        return
     try:
-        await query_service.execute(str(conn_id), str(stmt), emit,
-                                    schema=payload.get('schema'))
+        qid = await query_service.execute(str(conn_id), str(stmt), emit,
+                                          schema=payload.get('schema'))
+        # 登记在途查询,WS 断开时由端点统一取消(execute 内部无 await,
+        # create_task 一定先于本行完成,不存在登记窗口);任务结束即摘出,
+        # 长连接下集合不无限增长
+        active_queries.add(qid)
+        ctx = query_service.get(qid)
+        if ctx.task is not None:
+            ctx.task.add_done_callback(lambda _t, q=qid: active_queries.discard(q))
     except Exception as e:
         # execute 内部已把执行期错误转为 query.error;这里兜底同步建连等失败
         await emit({'event': 'query.error', 'data': {'error': str(e)}})
 
 
 async def _handle_ai(ws: WebSocket, req_id: str, payload: dict[str, Any],
-                     send_lock: asyncio.Lock) -> None:
+                     send_lock: asyncio.Lock, active_queries: set[str]) -> None:
     async def emit(event: str, data: dict[str, Any]) -> None:
         async with send_lock:
             await ws.send_json({'id': req_id, 'event': event, 'data': data})
@@ -125,13 +161,13 @@ HANDLERS = {
 }
 
 
-async def _run_handler(handler: Callable[[WebSocket, str, dict[str, Any], asyncio.Lock],
-                                         Awaitable[None]],
+async def _run_handler(handler: Callable[[WebSocket, str, dict[str, Any], asyncio.Lock,
+                                          set[str]], Awaitable[None]],
                        ws: WebSocket, req_id: str, payload: dict[str, Any],
-                       send_lock: asyncio.Lock) -> None:
+                       send_lock: asyncio.Lock, active_queries: set[str]) -> None:
     """兜底网:handler 的未预期异常(畸形 payload、元数据层异常等)转为 error 事件。"""
     try:
-        await handler(ws, req_id, payload, send_lock)
+        await handler(ws, req_id, payload, send_lock, active_queries)
     except Exception as e:
         log.exception('WS 请求处理失败(id=%s): %s', req_id, e)
         try:
@@ -142,14 +178,31 @@ async def _run_handler(handler: Callable[[WebSocket, str, dict[str, Any], asynci
             pass  # 连接可能已断,尽力而为
 
 
+async def _heartbeat(ws: WebSocket, send_lock: asyncio.Lock) -> None:
+    """周期心跳:客户端以"任意 inbound 消息"做半开连接检测的看门狗。"""
+    while True:
+        await asyncio.sleep(HEARTBEAT_SECONDS)
+        try:
+            async with send_lock:
+                await ws.send_json({'id': '_hb', 'event': 'ping', 'data': {}})
+        except Exception:
+            return  # 连接已断:接收循环会感知并走清理,心跳任务安静退出即可
+
+
 async def websocket_endpoint(ws: WebSocket) -> None:
     # 可选令牌:WS 通过 ?token= 鉴权(恒时比较)
     if config.ACCESS_TOKEN and not security.token_matches(ws.query_params.get('token')):
         await ws.close(code=4401)
         return
+    # 跨站 WS 防护:浏览器页面必须与本服务同源(令牌未启用时的主要防线)
+    if not _origin_allowed(ws.headers):
+        await ws.close(code=4403)
+        return
     await ws.accept()
     send_lock = asyncio.Lock()
     tasks: set[asyncio.Task] = set()
+    active_queries: set[str] = set()   # 本连接发起的在途查询 id
+    hb_task = asyncio.create_task(_heartbeat(ws, send_lock))
     try:
         while True:
             msg = await ws.receive_json()
@@ -166,15 +219,27 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     await ws.send_json({'id': req_id, 'event': 'error',
                                         'data': {'message': 'payload 必须是对象'}})
                 continue
-            task = asyncio.create_task(_run_handler(handler, ws, req_id, payload, send_lock))
+            if len(tasks) >= MAX_WS_TASKS:
+                async with send_lock:
+                    await ws.send_json({'id': req_id, 'event': 'error',
+                                        'data': {'message': '请求过于频繁,请等待进行中的请求完成'}})
+                continue
+            task = asyncio.create_task(
+                _run_handler(handler, ws, req_id, payload, send_lock, active_queries))
             tasks.add(task)
             task.add_done_callback(tasks.discard)
     except WebSocketDisconnect:
-        for t in tasks:
-            t.cancel()
+        pass
     except Exception as e:
         log.exception('WS 异常: %s', e)
-        for t in tasks:
-            t.cancel()
         with contextlib.suppress(Exception):
             await ws.close()
+    finally:
+        hb_task.cancel()
+        for t in tasks:
+            t.cancel()
+        # 断开即取消本连接的在途查询(取消 = driver.cancel + 杀任务 + 断连),
+        # 否则客户端走了查询仍在数据库上继续跑;已完成的查询 cancel 是 no-op
+        for qid in active_queries:
+            with contextlib.suppress(Exception):
+                await query_service.cancel(qid)

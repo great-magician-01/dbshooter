@@ -80,7 +80,9 @@ async function test() {
   testing.value = true
   testMsg.value = null
   try {
-    const r = await conns.test({ config: buildPayload() })
+    // 编辑已有连接时同传 id:密码留空 / uri 含 *** 时由后端回填已存值再测连,
+    // 否则会拿空密码去连,永远"测试失败"(见契约:POST /api/connections/test 支持 {id, config})
+    const r = await conns.test({ id: form.id ?? undefined, config: buildPayload() })
     testMsg.value = { ok: r.ok, text: r.message }
   } catch (e: any) {
     testMsg.value = { ok: false, text: e.message }
@@ -123,7 +125,11 @@ async function save() {
           <div v-if="show('username')" class="field"><label>用户名</label><input v-model="form.username"></div>
           <div v-if="show('password')" class="field"><label>密码{{ form.id ? '(留空不修改)' : '' }}</label><input v-model="form.password" type="password"></div>
           <div v-if="show('db')" class="field"><label>DB 索引</label><input v-model.number="form.db" type="number"></div>
-          <div v-if="show('uri')" class="field full"><label>连接 URI(可选,优先于主机/端口)</label><input v-model="form.uri" placeholder="mongodb://user:pass@host:27017/db"></div>
+          <div v-if="show('uri')" class="field full">
+            <label>连接 URI(可选,优先于主机/端口;<span v-if="form.id">留空或含 *** = 不修改</span><span v-else>含用户名密码时形如 mongodb://user:pass@host:27017/db</span>)</label>
+            <input v-model="form.uri" placeholder="mongodb://user:pass@host:27017/db">
+            <span v-if="form.id" class="hint">已存 URI 中的密码在编辑时不回显,显示为 ***;不修改请留空或保持带 *** 的值。</span>
+          </div>
           <div v-if="show('readonly')" class="field full">
             <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
               <input v-model="form.readonly" type="checkbox"> 只读模式(拦截一切写操作)

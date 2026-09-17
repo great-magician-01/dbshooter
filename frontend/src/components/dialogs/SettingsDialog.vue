@@ -47,11 +47,15 @@ function addNew() {
 
 async function save() {
   try {
-    await ai.saveProvider({ id: form.id, name: form.name || '未命名',
+    const item = await ai.saveProvider({ id: form.id, name: form.name || '未命名',
       base_url: form.base_url, api_key: form.api_key, model: form.model })
     toast('已保存', 'ok')
-    if (sel.value >= ai.providers.length || sel.value < 0) sel.value = 0
-    pick(Math.max(sel.value, 0))
+    // 按后端返回的 id 在重新加载的列表里定位:新建的会插到列表末尾,
+    // 沿用旧下标会选中另一个 Provider,表单跟着跳到错误的对象上
+    const i = ai.providers.findIndex(p => p.id === item?.id)
+    if (i >= 0) pick(i)
+    else if (ai.providers.length) pick(0)
+    else addNew()
   } catch (e: any) { toast(e.message, 'err') }
 }
 

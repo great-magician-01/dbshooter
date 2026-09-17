@@ -17,15 +17,32 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function load() {
     const { items } = await get<{ items: Tab[] }>('/api/workspace/tabs')
-    tabs.value = items
-    const active = items.find(t => t.is_active)
-    activeId.value = active?.id ?? items[0]?.id ?? null
-    seq = items.length + 1
+    // 合并而非覆盖:load 在途时用户可能已经新建了页签,服务端列表里还没有它们,
+    // 直接赋值会把这些页签丢掉(新建后不久刷新页面即可复现)
+    const serverIds = new Set(items.map(t => t.id))
+    const localOnly = tabs.value.filter(t => !serverIds.has(t.id))
+    localOnly.forEach((t, i) => { t.sort = items.length + i })
+    const keepActive = activeId.value !== null && localOnly.some(t => t.id === activeId.value)
+    tabs.value = [...items, ...localOnly]
+    if (!keepActive) {
+      const active = items.find(t => t.is_active)
+      activeId.value = active?.id ?? tabs.value[0]?.id ?? null
+    }
+    seq = tabs.value.length + 1
+    // 本地新增、服务端还没有的页签补一次写入(上次保存可能失败或仍在防抖窗口内)
+    for (const t of localOnly) persistTab(t)
   }
 
+  /** 待落库的顺序写入定时器:批量新建/连续切换合并成一次请求 */
+  let orderTimer: ReturnType<typeof setTimeout> | null = null
+
   function persistOrder() {
-    post('/api/workspace/tabs/order',
-      { ids: tabs.value.map(t => t.id), active_id: activeId.value }).catch(() => {})
+    if (orderTimer) clearTimeout(orderTimer)
+    orderTimer = setTimeout(() => {
+      orderTimer = null
+      post('/api/workspace/tabs/order',
+        { ids: tabs.value.map(t => t.id), active_id: activeId.value }).catch(() => {})
+    }, 300)
   }
 
   /** 待落库的防抖定时器:按页签分桶,A 页签的待发保存不会被 B 页签取消 */

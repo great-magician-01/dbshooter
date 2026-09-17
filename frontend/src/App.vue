@@ -15,6 +15,7 @@ import { useThemeStore } from '@/stores/theme'
 import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useSplitter } from '@/utils/split'
+import { toast } from '@/utils/toast'
 
 const theme = useThemeStore()
 const ui = useUiStore()
@@ -32,8 +33,13 @@ const { size: aiWidth, onPointerDown: aiSplit } = useSplitter(360, {
 
 onMounted(async () => {
   theme.init()
-  await Promise.all([conns.load(), wsStore.load(), ai.loadProviders()])
-  ai.loadSessions()
+  try {
+    await Promise.all([conns.load(), wsStore.load(), ai.loadProviders()])
+    await ai.loadSessions()
+  } catch (e: any) {
+    // 启动加载失败必须出声:401 几乎都是访问令牌不对(服务端设了 DBSHOOTER_TOKEN)
+    toast(e?.status === 401 ? '加载失败:请到设置里检查访问令牌' : `加载失败:${e?.message ?? '未知错误'}`, 'err')
+  }
 })
 </script>
 

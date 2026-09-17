@@ -32,7 +32,9 @@ export interface ConnectionSave {
 export interface MetaNode {
   path: string
   label: string
-  kind: 'database' | 'schema' | 'table' | 'view' | 'column' | 'keygroup' | 'key' | 'collection' | 'index'
+  /** error 为前端本地节点:子节点加载失败时占位显示,不可展开(见 TreeNode.vue) */
+  kind: 'database' | 'schema' | 'table' | 'view' | 'column' | 'keygroup' | 'key' | 'collection'
+      | 'index' | 'error'
   has_children: boolean
   extra: Record<string, any>
 }
@@ -40,7 +42,7 @@ export interface MetaNode {
 export interface Column { name: string; type: string }
 
 export interface ExecResult {
-  kind: 'rows' | 'affected' | 'command' | 'documents'
+  kind: 'rows' | 'affected' | 'command' | 'documents' | 'error'
   columns: Column[]
   rows: any[][]
   affected?: number | null

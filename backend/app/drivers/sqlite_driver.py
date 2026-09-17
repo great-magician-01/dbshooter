@@ -115,10 +115,15 @@ class SqliteDriver(DriverBase):
                             truncated=len(fetched) > limit,
                             elapsed_ms=int((time.monotonic() - t0) * 1000)))
                     else:
-                        await self.conn.commit()
                         results.append(ExecResult(
                             kind='affected', affected=max(cur.rowcount, 0),
                             elapsed_ms=int((time.monotonic() - t0) * 1000)))
+                # DML ... RETURNING 既有结果集也有写入:只看 description 会漏掉提交,
+                # 连接关闭即回滚、写入静默丢失。统一按"连接仍处于事务中"判断提交;
+                # 且必须等游标关闭(async with 退出)后再 commit —— 截断未抽干的
+                # 语句仍 in-progress,直接 commit 会报 statements in progress。
+                if self.conn.in_transaction:
+                    await self.conn.commit()
             except QueryError:
                 raise
             except Exception as e:  # sqlite3.OperationalError 等

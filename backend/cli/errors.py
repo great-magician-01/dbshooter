@@ -26,6 +26,21 @@ class CliError(Exception):
         self.code = code
 
 
+def mask_url(url: str) -> str:
+    """报错信息里的服务地址脱敏:REST 与 WS 统一走这里,避免两处各写一份漂移。
+
+    剥掉两段:
+    - `?查询串`——用户把令牌写成 `-s http://host/?token=XXX` 时,httpx 的 str(URL)
+      与 websockets 的 InvalidURI 消息都会原样带出,直接进终端/CI 日志就是泄漏;
+    - `user:pass@` 的 userinfo——同理。
+    """
+    no_query = url.split('?')[0]
+    scheme, sep, rest = no_query.partition('://')
+    if sep and '@' in rest:
+        rest = rest.rsplit('@', 1)[1]
+    return f'{scheme}{sep}{rest}' if sep else no_query
+
+
 def handle_cli_error(fn: _F) -> _F:
     """命令装饰器:CliError → stderr + 指定退出码;httpx/IO 异常统一兜底成业务失败(1),
     不向外抛裸 traceback。functools.wraps 保留签名,typer 靠注解生成参数。"""

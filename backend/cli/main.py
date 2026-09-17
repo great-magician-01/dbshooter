@@ -41,7 +41,10 @@ def _fix_stdio() -> None:
     只有 TextIOWrapper 支持 reconfigure,所以按 isinstance 判断。注意:测试用的
     click CliRunner 流(_NamedTextIOWrapper)正是其子类,跑测试时这里会被真的执行
     (errors='replace' 会把编码错误吞成替换字符)——即编码类问题在测试里不暴露,
-    别拿测试通过代替 Windows 真实控制台的验证。"""
+    别拿测试通过代替 Windows 真实控制台的验证。
+
+    因此 stdin 的 errors='replace' 同样会吞掉编码错误:--stdin 传 GBK 时文本层读到的
+    只是一堆替换字符,需要按原始字节自己解码,见 commands/query.py::_read_stdin。"""
     try:
         if isinstance(sys.stdout, io.TextIOWrapper):
             sys.stdout.reconfigure(encoding='utf-8', errors='replace', newline='')

@@ -69,7 +69,7 @@ CLI 只通过 REST/WS 与服务端通信,本地不碰 `data/` 目录。
 
 ## 4. 命令设计
 
-命令风格:noun-verb 两级子命令(typer)。连接参数统一接受 **id、id 前缀、或名称**(唯一匹配,歧义时报错并列出候选)。
+命令风格:noun-verb 两级子命令(typer)。连接参数统一接受 **id、id 前缀、名称、名称前缀**(优先级:精确 id > 精确名称 > 唯一 id 前缀 > 唯一名称前缀;歧义时报错并列出候选)。
 
 ```
 dbs serve [--host --port --dev]                  # 便利命令:拉起本机服务
@@ -135,8 +135,8 @@ backend/cli/
   client.py        # ApiClient(httpx 封装:鉴权/超时/错误归一化;inner 可替换)
   wsclient.py      # WS 同步客户端(websockets.sync),ai.text2sql 事件流
   state.py         # 全局选项状态(ctx.obj)
-  resolve.py       # 连接名/id 前缀 → 连接记录解析
-  output.py        # 渲染:table(rich)/ json / csv / raw;TTY 与 NO_COLOR 判定
+  resolve.py       # 连接引用解析:精确 id > 精确名称 > 唯一 id 前缀 > 唯一名称前缀
+  output.py        # 渲染:table(rich)/ json / csv / raw;TTY 与 NO_COLOR 判定;CSV 公式注入防护
   commands/
     conn.py  meta.py(tree/ddl/key)  query.py(query/export/history)
     ai.py    misc.py(health/serve/settings)
@@ -151,7 +151,8 @@ backend/cli/
 
 - `typer`(命令行框架,自带补全/帮助);
 - `rich`(表格与流式渲染,typer 官方搭档);
-- `websockets`(显式声明,供 `ai ask`)。
+- `websockets>=15`(显式声明,供 `ai ask`;`proxy=None` 关闭环境代理是 15.0 才有的参数,下限不能更低);
+- `pymongo>=4`(mongo 驱动直接 `import bson`,该模块实际由 pymongo 提供,不能只靠 motor 的传递依赖)。
 
 均加入 `requirements.txt`;`pyproject.toml` 的依赖与 requirements 保持一致(以 requirements 为准生成或直接列写)。
 
@@ -166,8 +167,8 @@ backend/cli/
 
 - `table`:rich Table,列来自 `ExecResult.columns`;`affected`/`command`/`documents` 三种 kind 分别有渲染分支(mongo documents 逐行 JSON 美化;redis command 打印 raw);
 - `json`:整包 `ExecResult.to_dict()` 输出(结构稳定,供 jq);
-- `csv`:与 `/api/query/export` 相同编码约定(utf-8-sig);
-- `raw`:仅值、tab 分隔,便于 `cut/awk`;
+- `csv`:与 `/api/query/export` 相同编码约定(utf-8-sig);字符串单元格以公式引导字符(`= + - @ \t \r`)开头时加 `'` 前缀(公式注入防护,前缀集合与服务端 `_csv_safe` 保持同步;数值不受影响);`-o` 在纯写语句(无结果集)时写出 0 字节空文件并提示,避免脚本 `&& cat` 读到陈旧内容;
+- `raw`:仅值、tab 分隔,便于 `cut/awk`(管道语义,不做公式中和);
 - 多结果集(一次执行多条语句)逐个渲染,JSON 模式输出数组。
 
 ### 5.5 配置解析优先级
@@ -179,14 +180,16 @@ v1 不做配置文件;若后续需要多环境,再加 `~/.dbshooter/config.toml`
 
 - 只读拦截完全由服务端 `ensure_writable()` 兜底,CLI 不做、也不应做第二份判断(避免漂移);
 - token 不落盘、不进 shell 历史:推荐用 env 注入;`-t` 仅作应急;
-- `conn add` 的 `--password` 缺省时走 getpass 隐式输入。
+- token 不进错误信息/日志:REST 与 WS 的报错统一走 `errors.mask_url`(剥 `?查询串` 与 `user:pass@`),异常文本里自带的 uri 再经 `_scrub` 兜底;
+- `conn add` 的 `--password` 缺省时走 getpass 隐式输入;
+- `dbs serve` 默认只监听 `127.0.0.1`;监听非本机地址且未设 `DBSHOOTER_TOKEN` 时启动即警告。
 
 ## 6. 测试方案
 
 - `backend/tests/test_cli.py`:**FastAPI TestClient 直插 `ApiClient`**(`ApiClient(inner)` 的 inner 就是 httpx.Client,TestClient 是其子类),monkeypatch `cli.state.make_client` 后所有命令走真实路由断言输出与退出码 —— 不需要起真实端口;
 - WS 部分:`stream_ai_events` 作为函数级替换点打桩,断言事件流渲染逻辑;服务端 WS 行为由 test_ws.py 覆盖;
-- 覆盖:连接解析(名/id/前缀/歧义)、query 四种 format、export 写盘、stdin/-f、只读拦截透出、ai ask 事件流、settings 读写;
-- CI 现有 job 里加跑同一 pytest 即可,无新流水线。
+- 覆盖:连接解析(精确 id/精确名称/前缀/歧义)、query 四种 format、export 写盘、stdin/-f(UTF-8 与 GBK)、只读拦截透出、ai ask 事件流、settings 读写,以及历次审查回归(CSV 公式注入、WS 报错脱敏、地址非法无 traceback、`serve` 默认监听等);
+- CI 的 backend job 里跑同一 pytest(外加 pyright、`pip check`、`pip install . && dbs --help` 打包冒烟),另有 docker job 做镜像构建冒烟。
 
 注意:元数据 SQLite 在测试会话内共享,用例里连接名必须带随机后缀,避免跨用例撞名。
 

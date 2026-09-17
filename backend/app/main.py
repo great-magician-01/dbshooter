@@ -1,6 +1,8 @@
 """应用装配:REST 路由 + WS + 静态前端托管 + 可选令牌鉴权。"""
 from __future__ import annotations
 
+import logging
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -11,6 +13,21 @@ from . import config, db, security
 from .api import ai, connections, query, settings, workspace
 from .api.ws import websocket_endpoint
 from .services.connection_manager import manager
+
+
+class _TokenRedactFilter(logging.Filter):
+    """uvicorn access log 会记录 WS 完整 path+query,抹掉 ?token= 防令牌明文落盘。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.args:
+            record.args = tuple(
+                re.sub(r'(token=)[^ &]+', r'\1***', str(a)) for a in record.args)
+        elif isinstance(record.msg, str):
+            record.msg = re.sub(r'(token=)[^ &]+', r'\1***', record.msg)
+        return True
+
+
+logging.getLogger('uvicorn.access').addFilter(_TokenRedactFilter())
 
 
 @asynccontextmanager
@@ -53,7 +70,9 @@ def create_app() -> FastAPI:
     else:
         @app.get('/')
         def no_frontend():
-            return {'app': 'DBShooter', 'hint': '前端未构建:cd frontend && npm run build,或开发模式 npm run dev'}
+            return {'app': 'DBShooter',
+                    'hint': '前端未构建:cd frontend && npm run build,或开发模式 npm run dev;'
+                            'pip 安装的 dbs 包不含前端,请用源码或 Docker 镜像获得完整界面'}
 
     return app
 

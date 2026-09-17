@@ -56,7 +56,20 @@ export function useVirtualList<T>(items: Ref<T[]>, opts: {
     viewportH.value = el.clientHeight
   }
 
-  return { rowH, virtual, visible, topPad, bottomPad, onScroll, syncViewport }
+  /**
+   * 监听容器尺寸变化(分隔条拖拽 / 窗口缩放 / 面板收起):视口高度变了必须重算渲染窗口,
+   * 否则会大片留白或漏渲染。返回清理函数,调用方须在卸载时执行(断开 observer,避免泄漏)。
+   * 无 ResizeObserver 的环境(老浏览器 / jsdom)退化为只在滚动时同步。
+   */
+  function observeViewport(el: HTMLElement | null | undefined): () => void {
+    if (!el || typeof ResizeObserver === 'undefined') return () => {}
+    syncViewport(el)
+    const ro = new ResizeObserver(() => syncViewport(el))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }
+
+  return { rowH, virtual, visible, topPad, bottomPad, onScroll, syncViewport, observeViewport }
 }
 
 /**

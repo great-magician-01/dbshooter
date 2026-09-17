@@ -7,7 +7,7 @@ import typer
 
 from ..client import ApiClient
 from ..errors import CliError, handle_cli_error
-from ..output import print_json, resolve_list_format
+from ..output import escape_ctrl, print_json, resolve_list_format
 from ..resolve import resolve_conn
 from ..state import get_state
 
@@ -38,7 +38,8 @@ def tree(ctx: typer.Context,
     def walk(p: str, level: int) -> None:
         for n in _fetch(client, cid, p):
             mark = '/' if n.get('has_children') else ''
-            print(f"{'  ' * level}{n['label']}{mark}")
+            # 库/表/列名来自库,控制字符先转义(与 conn list/history 同口径),终端状态不可被改
+            print(f"{'  ' * level}{escape_ctrl(str(n['label']))}{mark}")
             if n.get('has_children') and level + 1 < level_cap:
                 walk(n['path'], level + 1)
 
@@ -57,7 +58,8 @@ def ddl(ctx: typer.Context,
     text: str = client.get(f"/api/connections/{row['id']}/ddl", tables=tables)['ddl']
     if not text.strip():
         raise CliError(f'未取到 DDL,确认表名是否正确: {", ".join(tables)}')
-    print(text)
+    # DDL 含库里的标识符与注释:控制字符转义后再原样打印(\\n \\t 保留,不破多行结构)
+    print(escape_ctrl(text))
 
 
 @handle_cli_error

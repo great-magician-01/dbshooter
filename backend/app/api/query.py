@@ -56,7 +56,8 @@ async def cancel(body: CancelIn):
 
 @router.get('/history')
 def history(limit: int = 100):
-    return {'items': db.list_history(min(limit, 500))}
+    # 负数在 SQLite 里等于"无上限"(LIMIT -1),必须同时卡下限
+    return {'items': db.list_history(max(1, min(limit, 500)))}
 
 
 @router.post('/export')
@@ -73,15 +74,15 @@ async def export_csv(body: ExportIn):
         raise HTTPException(400, err)
 
     def _csv_safe(v: Any) -> Any:
-        """公式注入防护:Excel 会把 =/+/-/@ 开头的单元格当公式执行。"""
-        if isinstance(v, str) and v[:1] in ('=', '+', '-', '@'):
+        """公式注入防护:Excel 会把 =/+/-/@ 开头(含 TAB/CR 引导)的单元格当公式执行。"""
+        if isinstance(v, str) and v[:1] in ('=', '+', '-', '@', '\t', '\r'):
             return "'" + v
         return v
 
     def gen():
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow([c['name'] for c in first.columns])
+        w.writerow([_csv_safe(c['name']) for c in first.columns])   # 列名同样可携公式
         yield buf.getvalue(); buf.seek(0); buf.truncate()
         for row in first.rows:
             w.writerow(['' if v is None else _csv_safe(v) for v in row])

@@ -51,6 +51,17 @@ describe('ai store · provider', () => {
   })
 })
 
+describe('ai store · provider 保存', () => {
+  it('saveProvider:返回后端 item(保存后表单据此重新定位)', async () => {
+    vi.mocked(post).mockResolvedValueOnce({ item: { id: 'p9', name: 'X', model: 'm' } })
+    const ai = useAiStore()
+    const item = await ai.saveProvider({ name: 'X', base_url: 'https://x/v1', model: 'm' })
+    expect(item.id).toBe('p9')
+    expect(post).toHaveBeenCalledWith('/api/ai/providers',
+      expect.objectContaining({ name: 'X' }))
+  })
+})
+
 describe('ai store · 会话', () => {
   it('selectSession:assistant 消息 JSON 解析为 {text, sql}', async () => {
     const ai = useAiStore()
@@ -119,6 +130,94 @@ describe('ai store · 流式响应式与失败路径', () => {
     expect(ai.messages[1].streaming).toBe(false)
     expect(ai.messages[1].text).toContain('连接已断开')
     expect(ws.done).toHaveBeenCalledWith('r')
+  })
+
+  it('ask:新建会话失败时抛出(调用方提示并恢复输入),不留下 generating 卡死', async () => {
+    vi.mocked(post).mockRejectedValueOnce(new Error('Network Error'))
+    const ai = useAiStore()
+    await expect(ai.ask('查用户', null)).rejects.toThrow('会话创建失败:Network Error')
+    expect(ai.generating).toBe(false)
+    expect(ai.messages).toHaveLength(0)
+  })
+
+  it('cancelAsk:摘掉 WS handler 并复位状态,取消后到达的事件被丢弃', async () => {
+    const ai = useAiStore()
+    let emit: (ev: any) => void = () => {}
+    vi.mocked(ws.send).mockImplementationOnce(async (_t, _p, onEvent) => { emit = onEvent; return 'r' })
+    await ai.ask('查用户', null)
+    emit({ id: 'r', event: 'ai.token', data: { delta: 'SELECT' } })
+    expect(ai.generating).toBe(true)
+
+    ai.cancelAsk()
+    expect(ai.generating).toBe(false)
+    expect(ai.messages[1].streaming).toBe(false)
+    expect(ws.done).toHaveBeenCalledWith('r')
+
+    emit({ id: 'r', event: 'ai.token', data: { delta: ' 1' } })   // 取消后的迟到事件
+    emit({ id: 'r', event: 'ai.done', data: { sql: 'SELECT 1' } })
+    expect(ai.messages[1].text).toBe('SELECT')                    // 不再被追加
+    expect(ai.messages[1].sql).toBeNull()
+  })
+
+  it('cancelAsk:建连握手期间取消(此时 reqId 还没就绪),旧请求的终态事件不影响后续 ask', async () => {
+    const ai = useAiStore()
+    let emitOld: (ev: any) => void = () => {}
+    let releaseOld: (id: string) => void = () => {}
+    // send 卡在建连握手:reqId 要等它返回才存在,取消会落在这个窗口里
+    vi.mocked(ws.send).mockImplementationOnce((_t, _p, onEvent) => {
+      emitOld = onEvent
+      return new Promise<string>(res => { releaseOld = res })
+    })
+    const asking = ai.ask('查用户', null)
+    await new Promise(r => setTimeout(r, 0))     // 等 ask 走到 await ws.send
+    expect(ai.generating).toBe(true)
+
+    ai.cancelAsk()
+    expect(ai.generating).toBe(false)
+    expect(ai.messages[1].streaming).toBe(false)
+    expect(ai.messages[1].text).toBe('(已取消)')
+
+    releaseOld('r-old')                          // 握手完成:必须立刻补走取消路径摘掉 handler
+    await asking
+    expect(ws.done).toHaveBeenCalledWith('r-old')
+
+    // 新请求开始后,旧请求的终态事件迟到
+    let emitNew: (ev: any) => void = () => {}
+    vi.mocked(ws.send).mockImplementationOnce(async (_t, _p, onEvent) => { emitNew = onEvent; return 'r-new' })
+    await ai.ask('再查一次', null)
+    expect(ai.generating).toBe(true)
+
+    emitOld({ id: 'r-old', event: 'ai.done', data: { sql: 'SELECT old' } })
+    expect(ai.generating).toBe(true)             // 新请求仍应在生成中
+    const last = ai.messages[ai.messages.length - 1]
+    expect(last.streaming).toBe(true)
+    expect(last.sql).toBeNull()
+
+    emitNew({ id: 'r-new', event: 'ai.done', data: { sql: 'SELECT new' } })
+    expect(ai.generating).toBe(false)
+    expect(ai.messages[ai.messages.length - 1].sql).toBe('SELECT new')
+  })
+
+  it('cancelAsk:生成中切换过会话时,不改动新会话里的消息', async () => {
+    const ai = useAiStore()
+    let emit: (ev: any) => void = () => {}
+    vi.mocked(ws.send).mockImplementationOnce(async (_t, _p, onEvent) => { emit = onEvent; return 'r' })
+    await ai.ask('查用户', null)
+    // 切到别的会话:消息列表整体换掉,下标 1 已不是发起时的那条
+    vi.mocked(get).mockResolvedValueOnce({ items: [
+      { id: 'm8', role: 'user', content: '别的问题' },
+      { id: 'm9', role: 'assistant', content: JSON.stringify({ text: '别的回答', sql: null }) },
+    ] })
+    await ai.selectSession('s2')
+
+    ai.cancelAsk()
+    expect(ai.generating).toBe(false)
+    expect(ai.messages[1].text).toBe('别的回答')
+    expect(ai.messages[1].streaming).toBeUndefined()
+
+    emit({ id: 'r', event: 'ai.done', data: { sql: 'SELECT 1' } })
+    expect(ai.messages[1].text).toBe('别的回答')
+    expect(ai.messages[1].sql).toBeNull()
   })
 
   it('ask:生成中切换会话,迟到的流事件不污染新会话', async () => {

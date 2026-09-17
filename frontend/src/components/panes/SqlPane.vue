@@ -24,6 +24,7 @@ const running = ref(false)
 const columns = ref<Column[]>([])
 const rows = ref<any[][]>([])
 const hasMore = ref(false)
+const truncated = ref(false)
 const statusText = ref('就绪 · Ctrl+Enter 执行')
 const view = ref<'grid' | 'plan' | 'log'>('grid')
 const planText = ref('')
@@ -31,6 +32,8 @@ const logLines = ref<string[]>([])
 const queryId = ref<string | null>(null)
 const showConnSelect = ref(false)
 const loadingMore = ref(false)
+/** 执行代次:run / cancel 各自自增,事件回调凭捕获的代次丢弃过期事件 */
+let runGen = 0
 
 // 编辑器 / 结果区高度:分隔条可拖拽(见 .hsplit),上限随面板实际高度收
 const paneEl = ref<HTMLElement>()
@@ -49,6 +52,14 @@ type QueryEventData = Partial<QueryDone> & {
   has_more?: boolean
   error?: string
   message?: string
+}
+
+/** GET /api/query/{qid}/rows 的分页响应(has_more 只表示缓冲区内还有未拉取的行) */
+type RowsPage = {
+  rows: any[][]
+  has_more: boolean
+  truncated?: boolean
+  total_buffered: number
 }
 
 /** 页签绑定的 schema(右键 PG schema/表 新建的标签页):查询免写 schema 前缀 */
@@ -89,6 +100,7 @@ async function run() {
   const stmt = props.tab.content.trim()
   if (!stmt || running.value) return
   if (!connId.value) { statusText.value = '请先选择连接'; pushLog('请先选择连接', 'err'); return }
+  const gen = ++runGen   // 本次执行的代次:取消 / 重跑都会让在途事件作废
   running.value = true
   statusText.value = '执行中…'
   // 清空上一次查询的状态:非行结果集(UPDATE/INSERT/DDL)不会再有 query.rows 事件
@@ -96,15 +108,21 @@ async function run() {
   columns.value = []
   rows.value = []
   hasMore.value = false
+  truncated.value = false
   loadingMore.value = false
   pushLog(escapeHtml(stmt.split('\n').find(l => l.trim()) ?? stmt))
   await ws.send('query.execute',
     { conn_id: connId.value, stmt, schema: schema.value ?? undefined }, (ev) => {
+    // 取消后立刻重跑时,旧执行的事件可能还在路上:代次不符一律丢弃,
+    // 否则旧 query.done 会把新执行的状态改成"已完成"、running 被提前复位
+    if (gen !== runGen) return
     const d = (ev.data ?? {}) as QueryEventData
     if (ev.event === 'query.started') {
       queryId.value = d.query_id ?? null
     } else if (ev.event === 'query.rows') {
-      columns.value = d.columns ?? []; rows.value = d.rows ?? []; hasMore.value = d.has_more ?? false
+      columns.value = d.columns ?? []; rows.value = d.rows ?? []
+      hasMore.value = d.has_more ?? false
+      truncated.value = d.truncated ?? false
       view.value = 'grid'
     } else if (ev.event === 'query.done') {
       const rc = d.row_count ?? 0
@@ -115,7 +133,8 @@ async function run() {
       const label = kinds.includes('rows') || kinds.includes('documents')
         ? `${rc} 行`
         : kinds.includes('affected') ? `${affected} 行受影响` : `${rc} 行`
-      statusText.value = `${label} · ${ms}${d.truncated ? ' · 已截断' : ''}`
+      // 注意:query.done 不带 truncated(截断信息只在 query.rows 首包),别在这里读它
+      statusText.value = `${label} · ${ms}`
       workspace.lastRun = { rows: rc, ms: d.elapsed_ms ?? 0 }
       pushLog(`${iconSvg('check')} ${label},${ms}`, 'ok')
       running.value = false
@@ -128,7 +147,10 @@ async function run() {
       running.value = false
       ws.done(ev.id)
     }
-  }).catch(e => { statusText.value = e.message; running.value = false })
+  }).catch(e => {
+    if (gen !== runGen) return
+    statusText.value = e.message; running.value = false
+  })
 }
 
 async function showPlan() {
@@ -158,8 +180,11 @@ function format() {
 }
 
 async function cancel() {
+  runGen++   // 在途事件作废:取消后旧事件不得再改状态
   if (queryId.value) await post('/api/query/cancel', { query_id: queryId.value }).catch(() => {})
   running.value = false
+  // 终态事件已被代次守卫丢弃,状态得自己收尾,否则一直停在「执行中…」
+  statusText.value = '已取消'
 }
 
 /** 大结果集:从服务端缓冲拉下一页(由 ResultGrid 滚动到底时触发,也可点按钮) */
@@ -168,19 +193,24 @@ async function loadMore() {
   const qid = queryId.value    // 请求在途时可能重新执行,回来要认的是同一个 qid
   loadingMore.value = true
   try {
-    const d = await get<any>(`/api/query/${qid}/rows`,
+    const d = await get<RowsPage>(`/api/query/${qid}/rows`,
       { offset: rows.value.length, limit: 500 })
     if (queryId.value !== qid) return    // 已换/已重发查询,丢弃这一页
     rows.value.push(...d.rows)
     hasMore.value = d.has_more
-    statusText.value = `${rows.value.length} 行(已缓冲 ${d.total_buffered})${d.has_more ? ' · 还有更多' : ''}`
+    truncated.value = d.truncated ?? false
+    const buffered = `${rows.value.length} 行(已缓冲 ${d.total_buffered})`
+    statusText.value = d.has_more
+      ? `${buffered} · 还有更多`
+      : truncated.value ? `${buffered} · 已达 2000 行缓冲上限,请加 LIMIT 缩小结果` : buffered
   } finally {
     loadingMore.value = false
   }
 }
 
 function escapeHtml(s: string) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 }
 
 // 顶栏"执行"按钮
@@ -230,10 +260,15 @@ defineExpose({ run })
         <span class="rt-tab" :class="{ active: view === 'plan' }" @click="view = 'plan'">执行计划</span>
         <span class="rt-tab" :class="{ active: view === 'log' }" @click="view = 'log'">日志</span>
         <span class="result-status">{{ statusText }}</span>
+        <!-- has_more = 缓冲区内还有未拉取的行(与是否被截断无关),有就继续能拉 -->
         <button v-if="hasMore && view === 'grid'" class="pt-btn" style="margin-left:8px"
                 :disabled="loadingMore" @click="loadMore">
           {{ loadingMore ? '加载中…' : '加载更多' }}
         </button>
+        <!-- 缓冲已拉完且被驱动层 2000 行上限截断:再拉也没有了,只能靠 LIMIT 缩小结果 -->
+        <span v-else-if="view === 'grid' && truncated" class="result-hint">
+          已达 2000 行缓冲上限,请加 LIMIT 缩小结果
+        </span>
       </div>
       <div class="result-body">
         <template v-if="view === 'grid'">

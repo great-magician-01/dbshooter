@@ -66,6 +66,10 @@ input, textarea, select { font:inherit; color:var(--text) }
           cursor:pointer; white-space:nowrap; overflow:hidden }
 .tn-row:hover { background:var(--hover) }
 .tn-row.sel { background:var(--accent-dim) }
+/* 加载失败的提示节点:不可点击展开,整行标红 */
+.tn-row.err, .tn-row.err:hover { background:none; cursor:default; color:var(--red) }
+.tn-row.err .tn-ico { color:var(--red) }
+.tn-row.err .tn-arrow { visibility:hidden }
 .tn-arrow { width:16px; height:16px; flex:none; display:grid; place-items:center; color:var(--muted);
             font-size:9px; transition:transform .12s }
 .tn.open > .tn-row .tn-arrow { transform:rotate(90deg) }
@@ -136,6 +140,8 @@ input, textarea, select { font:inherit; color:var(--text) }
 .rt-tab.active { color:var(--text); border-bottom-color:var(--accent) }
 .rt-badge { font-size:10px; background:var(--hover); border-radius:8px; padding:0 6px; color:var(--text2) }
 .result-status { margin-left:auto; font-size:11.5px; color:var(--muted); font-family:var(--mono) }
+/* 缓冲上限截断提示(替代"加载更多"按钮) */
+.result-hint { margin-left:8px; font-size:11.5px; color:var(--amber) }
 .result-body { flex:1; min-height:0; overflow:auto; position:relative }
 .result-placeholder { position:absolute; inset:0; display:grid; place-items:center;
                       color:var(--muted); font-size:12.5px }
@@ -228,6 +234,9 @@ pre.log .ok { color:var(--green) } pre.log .err { color:var(--red) }
                      font-size:12.5px; line-height:1.5 }
 .ai-send { width:30px; height:30px; flex:none; border-radius:6px; background:var(--accent);
            color:#fff; display:grid; place-items:center }
+.ai-cancel { height:30px; flex:none; padding:0 10px; border-radius:6px; border:1px solid var(--border);
+             color:var(--text2); font-size:12px }
+.ai-cancel:hover { background:var(--hover); color:var(--text) }
 .ai-empty { color:var(--muted); font-size:12.5px; text-align:center; padding:30px 10px; line-height:2 }
 
 /* 下拉菜单 */
@@ -287,6 +296,7 @@ button.prov:hover { color:var(--text); border-color:var(--accent) }
 .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px 14px }
 .form-grid .full { grid-column:1/-1 }
 .field label { display:block; font-size:11.5px; color:var(--text2); margin-bottom:4px }
+.field .hint { display:block; margin-top:4px; font-size:11px; color:var(--muted); line-height:1.6 }
 .field input[type="checkbox"] { width:auto; height:auto }
 .btn { height:30px; padding:0 14px; border-radius:5px; border:1px solid var(--border); color:var(--text2) }
 .btn:hover { background:var(--hover); color:var(--text) }

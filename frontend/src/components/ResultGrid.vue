@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, toRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
 
 import type { Column } from '@/types'
 import { cellText, isNullCell } from '@/utils/format'
@@ -16,8 +16,11 @@ const emit = defineEmits<{ (e: 'reach-end'): void }>()
 
 const scrollEl = ref<HTMLElement>()
 // 行高初值 29px = 12px 字体 * 1.5 行高 + 上下 padding 10px + 边框 1px,挂载后按实测修正
-const { rowH, virtual, visible, topPad, bottomPad, onScroll, syncViewport } =
+const { rowH, virtual, visible, topPad, bottomPad, onScroll, syncViewport, observeViewport } =
   useVirtualList(toRef(props, 'rows'), { rowHeight: 29, threshold: 500 })
+
+/** 断开视口 ResizeObserver 的清理函数 */
+let stopObserveViewport: (() => void) | null = null
 
 /**
  * 虚拟模式的列宽(ch):table-layout:fixed 需要显式宽度。
@@ -54,9 +57,13 @@ watch(() => props.rows.length, async () => {
 onMounted(async () => {
   await nextTick()
   syncViewport(scrollEl.value)
+  // 容器尺寸变化(拖拽结果区高度 / 窗口缩放)时重算窗口
+  stopObserveViewport = observeViewport(scrollEl.value)
   measureRow()
   checkEnd()
 })
+
+onBeforeUnmount(() => { stopObserveViewport?.(); stopObserveViewport = null })
 
 function checkEnd() {
   const el = scrollEl.value

@@ -17,6 +17,8 @@ export const ICON_PATHS: Record<string, string> = {
   index: '<path d="M2.5 8h8.5M8 4.8L11.2 8 8 11.2M13.5 3.8v8.4"/>',
   database: '<ellipse cx="8" cy="4.2" rx="5" ry="2"/><path d="M3 4.2v7.6c0 1.1 2.2 2 5 2s5-.9 5-2V4.2M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>',
   dot: '<circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none"/>',
+  // 树节点加载失败提示(见 TreeNode.vue 的 errorNode)
+  warn: '<path d="M8 2.8l6.2 10.4H1.8z"/><path d="M8 6.6v3.2M8 11.7v.1"/>',
   // 页签 / 面板
   sql: '<path d="M5.6 4.6L2.6 8l3 3.4M10.4 4.6L13.4 8l-3 3.4"/>',
   redis: '<circle cx="5.2" cy="5.2" r="2.6"/><path d="M7.1 7.1L13 13M10.7 9.7l1.8-1.8M12.3 11.3l1.6-1.6"/>',

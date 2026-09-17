@@ -12,9 +12,11 @@ from .base import DriverBase, ExecResult, MetaNode, QueryError, register
 SCAN_COUNT = 500          # 每次 SCAN 批量
 MAX_GROUP_KEYS = 200      # 单个分组节点下直接展示的 key 上限
 
-# 会无限期挂起连接的命令:查询在无读超时的 WS 会话里执行,一旦阻塞整个连接不可用
-_BLOCKING_CMDS = {'BLPOP', 'BRPOP', 'BRPOPLPUSH', 'BLMOVE', 'BZPOPMIN', 'BZPOPMAX',
-                  'SUBSCRIBE', 'PSUBSCRIBE', 'SSUBSCRIBE', 'MONITOR', 'WAIT'}
+# 会无限期挂起连接的命令:一旦阻塞,该查询会话被占死,只能等读超时兜底。
+# 流式读取(XREAD 系)与调试命令(DEBUG SLEEP 会阻塞整个服务端)同样拦截。
+_BLOCKING_CMDS = {'BLPOP', 'BRPOP', 'BRPOPLPUSH', 'BLMOVE', 'BLMPOP', 'BZPOPMIN',
+                  'BZPOPMAX', 'BZMPOP', 'SUBSCRIBE', 'PSUBSCRIBE', 'SSUBSCRIBE',
+                  'MONITOR', 'WAIT', 'DEBUG', 'XREAD', 'XREADGROUP'}
 
 
 def format_command_result(value, indent: int = 0) -> list[str]:
@@ -60,11 +62,13 @@ class RedisDriver(DriverBase):
     def _client(self, db: int | None = None) -> aioredis.Redis:
         db = db if db is not None else int((self.cfg.get('params') or {}).get('db', 0))
         if db not in self._clients:
+            # socket_timeout 是阻塞命令的兜底:黑名单之外的慢命令也不能无限等
             self._clients[db] = aioredis.Redis(
                 host=self.cfg.get('host') or '127.0.0.1',
                 port=int(self.cfg.get('port') or 6379),
                 password=self.cfg.get('password') or None,
-                db=db, decode_responses=True, socket_connect_timeout=5)
+                db=db, decode_responses=True,
+                socket_connect_timeout=5, socket_timeout=30)
         return self._clients[db]
 
     async def connect(self) -> None:
@@ -91,6 +95,8 @@ class RedisDriver(DriverBase):
                 pass  # 无 CONFIG 权限时按默认 16 个库
             return [MetaNode(path=f'db{i}', label=f'db{i}', kind='database', has_children=True)
                     for i in range(db_count)]
+        if not parts[0].startswith('db') or not parts[0][2:].isdigit():
+            raise QueryError(f'非法的元数据路径: {path}(期望形如 db0 或 db0/prefix)')
         db = int(parts[0][2:])
         prefix = parts[1] if len(parts) > 1 else ''
         return await self._scan_level(db, prefix)

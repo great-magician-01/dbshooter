@@ -48,16 +48,53 @@ class ExecResult:
         }.items() if v is not None}
 
 
+def first_keyword(stmt: str) -> str:
+    """剥掉前导注释/括号/空白后取首个关键字(小写);纯注释语句返回 ''。
+
+    旧实现 lstrip(' \\t\\r\\n(-') 把任意个 '-' 当空白剥掉:
+    '-- select\\nDELETE ...' 会被判成 select 放行(绕过),而 '-- 注释\\nSELECT ...'
+    又会被误判成非查询拦截(误伤)。
+    注意 MySQL 可执行版本注释 /*! ... */(及 MariaDB /*M! ... */)不能当注释剥掉,
+    否则 '/*! SET ... */' 会绕过白名单 —— 遇 /*! 直接停,首词必然不在白名单内。
+    """
+    s = stmt
+    while True:
+        s = s.lstrip(' \t\r\n(')
+        if s.startswith('--'):
+            nl = s.find('\n')
+            s = '' if nl < 0 else s[nl + 1:]
+            continue
+        if s.startswith('#'):   # MySQL 行注释
+            nl = s.find('\n')
+            s = '' if nl < 0 else s[nl + 1:]
+            continue
+        if s.startswith('/*') and not s.startswith('/*!') and not s.startswith('/*M!'):
+            end = s.find('*/')
+            s = '' if end < 0 else s[end + 2:]
+            continue
+        break
+    parts = s.split(None, 1)
+    if not parts:
+        return ''
+    token = parts[0].lower().rstrip(';')
+    # 剥掉分号后为空(如 '; DROP ...'):返回原始 token 让白名单拒绝,
+    # 不能当成"纯注释空语句"放行
+    return token if token else parts[0].lower()
+
+
 def ensure_writable(stmt: str, readonly: bool) -> None:
-    """只读连接拦截写操作(首词快速拦截,给出友好提示)。
+    """只读连接拦截写操作(剥注释后的首词白名单,给出友好提示)。
 
     仅靠首词判断不够:WITH 数据修改 CTE、EXPLAIN ANALYZE <DML>、写型 PRAGMA
     首词都在 READONLY_PREFIXES 里。真正的硬保证由各驱动在连接层实现
-    (SQLite mode=ro / PG default_transaction_read_only / MySQL 会话只读)。
+    (SQLite mode=ro / PG default_transaction_read_only / MySQL 会话只读),
+    本函数的职责是尽早拦下明确的写操作并给出可读提示。
     """
     if not readonly:
         return
-    first = stmt.lstrip(' \t\r\n(-').split(None, 1)[0].lower() if stmt.strip() else ''
+    first = first_keyword(stmt)
+    if not first:
+        return  # 纯注释/空语句,无可执行内容(也避免 ''.split()[0] 的 IndexError)
     if first not in READONLY_PREFIXES:
         raise ReadonlyViolation(f'当前连接为只读模式,已拦截非查询语句: {first.upper()}')
 

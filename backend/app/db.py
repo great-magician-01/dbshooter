@@ -1,16 +1,19 @@
 """应用元数据存储:内置 SQLite(连接 / AI Provider / AI 会话 / 工作区页签 / 查询历史 / settings)。
 
 同步 sqlite3 + 全局锁:元数据操作极低频,无需异步驱动,换来的是简单可靠。
-敏感字段(password / api_key)在写入前经 security.encrypt 加密。
+敏感字段(password / api_key / params 整体)在写入前经 security.encrypt 加密。
 """
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+
+from cryptography.fernet import InvalidToken
 
 from . import config, security
 
@@ -127,11 +130,53 @@ def reset_for_tests() -> None:
 
 # ──────────────────────── 连接 ────────────────────────
 
+_PARAMS_ENC_PREFIX = 'fernet:'   # params_json 密文前缀,用于区分明文历史数据
+# user 段允许为空(redis://:password@host 是合法且常见的形态,漏掉就是明文回显)
+_URI_PWD_RE = re.compile(r'^([a-zA-Z][\w+.-]*://[^:/@\s]*):[^@\s]+@')
+
+
+def _decrypt(token: str) -> str:
+    """解密并给出可操作的中文错误(密钥被换/secret.key 损坏时不再是裸 InvalidToken)。"""
+    try:
+        return security.decrypt(token)
+    except InvalidToken as e:
+        raise RuntimeError('敏感数据解密失败:加密密钥(DBSHOOTER_SECRET 或 data/secret.key)'
+                           '与已存数据不匹配,请恢复密钥或重建数据') from e
+
+
+def _encrypt_params(params: dict[str, Any]) -> str:
+    """params 整体加密落库:mongo uri 等值可能内嵌密码,明文落库即泄漏。
+    空前缀区分:旧行仍是明文 JSON,读取侧按前缀兼容。"""
+    if not params:
+        return '{}'
+    return _PARAMS_ENC_PREFIX + security.encrypt(json.dumps(params))
+
+
+def _decrypt_params(stored: str) -> dict[str, Any]:
+    if not stored:
+        return {}
+    if stored.startswith(_PARAMS_ENC_PREFIX):
+        plain = _decrypt(stored[len(_PARAMS_ENC_PREFIX):])
+        return dict(json.loads(plain or '{}'))
+    return dict(json.loads(stored))   # 明文历史数据
+
+
+def _redact_params(params: dict[str, Any]) -> dict[str, Any]:
+    """对外输出的 params 脱敏:mongodb://user:pass@host → mongodb://user:***@host。"""
+    out: dict[str, Any] = {}
+    for k, v in params.items():
+        if isinstance(v, str) and '://' in v:
+            out[k] = _URI_PWD_RE.sub(r'\1:***@', v, count=1)
+        else:
+            out[k] = v
+    return out
+
+
 def _conn_out(row: dict[str, Any]) -> dict[str, Any]:
-    """对外输出:密文不下发,只标记是否已设置。"""
+    """对外输出:密文不下发,只标记是否已设置;params 解密后脱敏(uri 内嵌密码打码)。"""
     row = dict(row)
     row['has_password'] = bool(row.pop('password_enc'))
-    row['params'] = json.loads(row.pop('params_json') or '{}')
+    row['params'] = _redact_params(_decrypt_params(row.pop('params_json') or '{}'))
     row['readonly'] = bool(row['readonly'])
     return row
 
@@ -141,12 +186,12 @@ def list_connections() -> list[dict[str, Any]]:
 
 
 def get_connection(cid: str) -> dict[str, Any] | None:
-    """内部使用:含解密后的密码,绝不下发前端。"""
+    """内部使用:含解密后的密码与完整 params,绝不下发前端。"""
     row = one('SELECT * FROM connections WHERE id=?', (cid,))
     if not row:
         return None
-    row['password'] = security.decrypt(row.pop('password_enc') or '')
-    row['params'] = json.loads(row.pop('params_json') or '{}')
+    row['password'] = _decrypt(row.pop('password_enc') or '')
+    row['params'] = _decrypt_params(row.pop('params_json') or '{}')
     row['readonly'] = bool(row['readonly'])
     return row
 
@@ -160,7 +205,7 @@ def create_connection(d: dict[str, Any]) -> dict[str, Any]:
         (cid, d['name'], d['type'], d.get('host') or '', d.get('port'),
          d.get('database') or '', d.get('username') or '',
          security.encrypt(d.get('password') or ''),
-         json.dumps(d.get('params') or {}), int(bool(d.get('readonly'))),
+         _encrypt_params(d.get('params') or {}), int(bool(d.get('readonly'))),
          d.get('sort', 0), t, t))
     return _conn_out(_must('SELECT * FROM connections WHERE id=?', (cid,)))
 
@@ -177,12 +222,22 @@ def update_connection(d: dict[str, Any]) -> dict[str, Any] | None:
     port = old['port'] if d.get('port') is None else d['port']
     database = old['database'] if d.get('database') is None else d['database']
     username = old['username'] if d.get('username') is None else d['username']
-    params = json.loads(old['params_json'] or '{}') if d.get('params') is None else d['params']
+    # params 按键合并:uri 被脱敏回显(含 ***)或留空 = 不修改该键,与 password 语义一致;
+    # 其余键显式传值才覆盖,未传的键沿用旧值
+    old_params = _decrypt_params(old['params_json'] or '{}')
+    if d.get('params') is None:
+        params = old_params
+    else:
+        params = dict(old_params)
+        for k, v in (d['params'] or {}).items():
+            if k == 'uri' and (not isinstance(v, str) or not v or '***' in v):
+                continue
+            params[k] = v
     readonly = bool(old['readonly']) if d.get('readonly') is None else d['readonly']
     run('UPDATE connections SET name=?,type=?,host=?,port=?,database=?,username=?,'
         'password_enc=?,params_json=?,readonly=?,updated_at=? WHERE id=?',
         (d['name'], d['type'], host, port, database, username, pwd,
-         json.dumps(params or {}), int(readonly), now(), cid))
+         _encrypt_params(params), int(readonly), now(), cid))
     return _conn_out(_must('SELECT * FROM connections WHERE id=?', (cid,)))
 
 
@@ -207,7 +262,7 @@ def get_provider(pid: str) -> dict[str, Any] | None:
     row = one('SELECT * FROM ai_providers WHERE id=?', (pid,))
     if not row:
         return None
-    row['api_key'] = security.decrypt(row.pop('api_key_enc') or '')
+    row['api_key'] = _decrypt(row.pop('api_key_enc') or '')
     row['is_active'] = bool(row['is_active'])
     return row
 
@@ -307,19 +362,19 @@ def list_tabs() -> list[dict[str, Any]]:
 
 
 def save_tab(d: dict[str, Any]) -> dict[str, Any]:
-    """upsert:不存在则插入,存在则更新内容/标题/上下文。"""
+    """upsert:不存在则插入,存在则更新内容/标题/上下文。
+
+    用 SQLite UPSERT 而非"先查后插":前端防抖重复提交时,
+    先查后插的竞态窗口会把第二次提交打成 IntegrityError 500。
+    """
     t = now()
-    exists = one('SELECT id FROM editor_tabs WHERE id=?', (d['id'],))
-    if exists:
-        run('UPDATE editor_tabs SET type=?,title=?,connection_id=?,context_json=?,content=?,'
-            'sort=?,updated_at=? WHERE id=?',
-            (d['type'], d['title'], d.get('connection_id'), json.dumps(d.get('context') or {}),
-             d.get('content', ''), d.get('sort', 0), t, d['id']))
-    else:
-        run('INSERT INTO editor_tabs(id,type,title,connection_id,context_json,content,sort,'
-            'is_active,updated_at) VALUES(?,?,?,?,?,?,?,0,?)',
-            (d['id'], d['type'], d['title'], d.get('connection_id'),
-             json.dumps(d.get('context') or {}), d.get('content', ''), d.get('sort', 0), t))
+    run('INSERT INTO editor_tabs(id,type,title,connection_id,context_json,content,sort,'
+        'is_active,updated_at) VALUES(?,?,?,?,?,?,?,0,?) '
+        'ON CONFLICT(id) DO UPDATE SET type=excluded.type,title=excluded.title,'
+        'connection_id=excluded.connection_id,context_json=excluded.context_json,'
+        'content=excluded.content,sort=excluded.sort,updated_at=excluded.updated_at',
+        (d['id'], d['type'], d['title'], d.get('connection_id'),
+         json.dumps(d.get('context') or {}), d.get('content', ''), d.get('sort', 0), t))
     row = _must('SELECT * FROM editor_tabs WHERE id=?', (d['id'],))
     row['context'] = json.loads(row.pop('context_json') or '{}')
     row['is_active'] = bool(row['is_active'])

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import AppIcon from '@/components/AppIcon.vue'
 import { useConnectionsStore } from '@/stores/connections'
@@ -37,16 +37,28 @@ const ico = computed(() => {
     case 'collection': return 'collection'
     case 'index': return 'index'
     case 'database': case 'schema': return 'database'
+    case 'error': return 'warn'
     default: return 'dot'
   }
 })
+
+/** 加载失败时插入的提示节点(kind=error 不可展开):失败不能静默成空数组,否则与"确实没有子节点"无法区分 */
+function errorNode(msg: string): MetaNode {
+  return {
+    path: `${props.node.path}#error`,
+    label: `加载失败:${msg}`,
+    kind: 'error',
+    has_children: false,
+    extra: {},
+  }
+}
 
 async function loadChildren() {
   loading.value = true
   try {
     children.value = await conns.metadata(props.conn.id, props.node.path)
-  } catch {
-    children.value = []
+  } catch (e: any) {
+    children.value = [errorNode(e?.message ?? '未知错误')]
   } finally {
     loading.value = false
   }
@@ -60,6 +72,13 @@ async function toggle() {
 }
 
 onMounted(() => { if (isVirtual.value) loadChildren() })
+
+// 连接被编辑(改名 / 换库 / 换只读)后元数据缓存作废:已加载的子节点重置,展开中则立刻重拉
+watch(() => conns.metaVersion, () => {
+  if (children.value === null) return
+  children.value = null
+  if (open.value) loadChildren()
+})
 
 /** 双击叶子节点:按类型打开对应工作台 */
 function openTab() {
@@ -115,7 +134,7 @@ function onContextMenu(e: MouseEvent) {
 
 <template>
   <div class="tn" :class="{ open, leaf: !node.has_children }">
-    <div v-if="!isVirtual" class="tn-row" :class="{ sel }"
+    <div v-if="!isVirtual" class="tn-row" :class="{ sel, err: node.kind === 'error' }"
          @click="toggle" @dblclick="openTab" @contextmenu.prevent="onContextMenu">
       <span class="tn-arrow"><AppIcon name="caret" :size="10" /></span>
       <span class="tn-ico" :class="{ pk: ico === 'pk' }"><AppIcon :name="ico" /></span>

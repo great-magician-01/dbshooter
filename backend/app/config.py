@@ -9,7 +9,9 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]  # 项目根目录
 
-DATA_DIR = Path(os.environ.get('DBSHOOTER_DATA_DIR', _ROOT / 'data'))
+# pip 安装形态下 _ROOT 落在 site-packages,数据目录不能写进那里,退回当前工作目录
+_DEFAULT_DATA = (_ROOT / 'data') if (_ROOT / 'run.py').exists() else (Path.cwd() / 'data')
+DATA_DIR = Path(os.environ.get('DBSHOOTER_DATA_DIR', _DEFAULT_DATA))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = DATA_DIR / 'dbshooter.db'

@@ -24,9 +24,22 @@ class ConnectionManager:
             if not cfg:
                 raise QueryError(f'连接不存在: {conn_id}')
             driver = create_driver(cfg)
-            await driver.connect()
+            try:
+                await driver.connect()
+            except Exception:
+                # 建连失败必须回收半成品驱动(池/线程已建但 ping 没过等情形),
+                # 否则反复重试会持续泄漏连接池与监控线程
+                try:
+                    await driver.close()
+                except Exception:
+                    pass
+                raise
             self._drivers[conn_id] = driver
             return driver
+
+    def get_cached(self, conn_id: str) -> DriverBase | None:
+        """只看缓存、不触发建连:取消等路径专用(避免为取消重建连接再立刻断开)。"""
+        return self._drivers.get(conn_id)
 
     async def test_config(self, cfg: dict[str, Any]) -> tuple[bool, str]:
         """用完整临时配置试连(不进入缓存)。"""

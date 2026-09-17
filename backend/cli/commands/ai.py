@@ -59,9 +59,11 @@ def ask(ctx: typer.Context,
                 raise CliError(str(data.get('message') or 'AI 调用失败'))
             elif event == 'ai.done':
                 done = data
-    except CliError:
+    except BaseException:
         # 一个事件都没收到 = WS 压根没建起来:刚建的会话没人用过,删掉;
-        # 已经跑起来的(AI 报错等)保留,里面有对话痕迹
+        # 已经跑起来的(AI 报错等)保留,里面有对话痕迹。
+        # 收 BaseException 而非 CliError:Ctrl+C(KeyboardInterrupt,不是 Exception 子类)
+        # 中断时会话同样是没人用过的孤儿,不清就是每次中断留一条垃圾会话。
         if created_id is not None and not got_event:
             _delete_session_quiet(client, created_id)
         raise

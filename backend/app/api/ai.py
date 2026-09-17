@@ -1,6 +1,8 @@
 """AI:Provider(OpenAI 兼容,多配置单生效)+ 会话/消息持久化。"""
 from __future__ import annotations
 
+import sqlite3
+
 from fastapi import APIRouter, HTTPException
 
 from .. import db
@@ -18,7 +20,10 @@ def list_providers():
 
 @router.post('/providers')
 def create_provider(body: ProviderIn):
-    return {'item': db.create_provider(body.model_dump())}
+    try:
+        return {'item': db.create_provider(body.model_dump())}
+    except sqlite3.IntegrityError:
+        raise HTTPException(400, f'Provider id 已存在: {body.id}')
 
 
 @router.post('/providers/update')

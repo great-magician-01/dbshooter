@@ -3,16 +3,25 @@ uvicorn[standard]>=0.29
 pydantic>=2.6
 aiosqlite>=0.20
 aiomysql>=0.2.0
-# aiomysql 0.3.x 仍从 pymysql.converters 导入 escape_dict / escape_bytes_prefixed,
-# PyMySQL 1.2.1+ 已移除这些符号(干净环境装新版直接 ImportError)。
-# aiomysql 发布兼容新版后可解除此钉。
-PyMySQL>=1.1,<1.2.1
+# aiomysql(最新 0.3.2)仍从 pymysql.converters 导入 escape_dict / escape_bytes_prefixed。
+# 实测:PyMySQL 1.2.1/1.2.2 已删除这两个符号 → import aiomysql 直接 ImportError;
+# 1.2.3 恢复为占位符("DO NOT IMPORT THIS!!!",仅保证可导入,不可调用),
+# 且上游声明这两个别名将在 1.3.0 彻底移除,故上限必须 <1.3.0 防止再次炸 CI。
+# 本项目从不向 execute 传 dict/bytes 参数(仅元数据查询传 str 元组,转义正常),
+# 不触达占位符路径。解除条件:aiomysql 发布不再依赖这两个符号的版本,或更换驱动库。
+PyMySQL>=1.2.3,<1.3.0
 asyncpg>=0.29
 redis>=5.0
 motor>=3.4
+# mongo 驱动直接 import bson,bson 实际来自 motor 的传递依赖 pymongo(任何清单都没声明过),
+# 显式声明避免 motor 换依赖后 import bson 直接炸。注意:PyPI 上有个已废弃的同名独立
+# bson 包,装它不会提供 pymongo 的 bson,别装错。
+pymongo>=4
 cryptography>=42
 httpx>=0.27
 pyjson5>=1.6
 typer>=0.12
 rich>=13
-websockets>=12
+# CLI(backend/cli/wsclient.py)传 proxy=None 关闭环境变量代理,该参数 15.0 才加入,
+# 下限必须 >=15(12/13/14 会直接 TypeError: unexpected keyword argument 'proxy')。
+websockets>=15

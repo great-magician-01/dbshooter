@@ -1,5 +1,5 @@
-/** utils/virtualList 纯逻辑单测:窗口计算与列宽估算。 */
-import { describe, expect, it } from 'vitest'
+/** utils/virtualList 纯逻辑单测:窗口计算、视口监听与列宽估算。 */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
 import { estimateColWidths, useVirtualList } from '@/utils/virtualList'
@@ -59,6 +59,46 @@ describe('useVirtualList', () => {
     expect(v.visible.value[0].index).toBe(10)
     v.syncViewport(null)                           // 空值安全
     expect(v.visible.value[0].index).toBe(10)
+  })
+})
+
+describe('useVirtualList · observeViewport', () => {
+  /** jsdom 没有 ResizeObserver,用一个最小替身记录 observe/disconnect 并手动触发回调 */
+  class FakeRO {
+    static instances: FakeRO[] = []
+    observed: HTMLElement[] = []
+    disconnected = false
+    constructor(public cb: () => void) { FakeRO.instances.push(this) }
+    observe(el: HTMLElement) { this.observed.push(el) }
+    disconnect() { this.disconnected = true }
+  }
+
+  beforeEach(() => {
+    FakeRO.instances = []
+    vi.stubGlobal('ResizeObserver', FakeRO)
+  })
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('容器尺寸变化时重算窗口,清理函数断开 observer', () => {
+    const items = ref(Array.from({ length: 1000 }, (_, i) => i))
+    const v = useVirtualList(items, { rowHeight: 30, threshold: 100, overscan: 0 })
+    const el = { scrollTop: 300, clientHeight: 300 } as HTMLElement
+    const stop = v.observeViewport(el)
+    expect(FakeRO.instances[0].observed).toEqual([el])
+    expect(v.visible.value).toHaveLength(10)       // 挂载即同步一次视口:300/30 = 10 行
+    ;(el as any).clientHeight = 30                 // 拖拽分隔条把结果区压扁
+    FakeRO.instances[0].cb()
+    expect(v.visible.value).toHaveLength(1)
+    stop()
+    expect(FakeRO.instances[0].disconnected).toBe(true)
+  })
+
+  it('无 ResizeObserver / 无容器时不抛错', () => {
+    const items = ref<number[]>([])
+    const v = useVirtualList(items)
+    expect(() => v.observeViewport(null)()).not.toThrow()
+    vi.unstubAllGlobals()                          // 退化为无 ResizeObserver 的环境
+    expect(() => v.observeViewport({ clientHeight: 0 } as HTMLElement)()).not.toThrow()
   })
 })
 

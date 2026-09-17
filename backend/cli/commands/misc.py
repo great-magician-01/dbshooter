@@ -6,7 +6,7 @@ import os
 import typer
 
 from ..errors import CliError, handle_cli_error
-from ..output import make_console, print_json, print_rows, resolve_list_format
+from ..output import make_console, print_json, print_rows, resolve_list_format, warn
 from ..state import get_state
 
 settings_app = typer.Typer(help='通用设置(与 Web 端共享存储)', no_args_is_help=True)
@@ -26,14 +26,30 @@ def serve(ctx: typer.Context,
           dev: bool = typer.Option(False, '--dev', help='热重载(等价 DBSHOOTER_DEV=1)')) -> None:
     """启动本机服务(等价 python run.py)。
 
+    监听地址:--host > DBSHOOTER_HOST > 127.0.0.1(默认只听本机;要对外提供访问
+    需显式指定,且未设 DBSHOOTER_TOKEN 时会启动即警告)。端口同理:--port > DBSHOOTER_PORT > 5718。
+
     注意:pip install . 场景下默认数据目录会落在 site-packages 旁,
     建议显式设置 DBSHOOTER_DATA_DIR。
     """
     import uvicorn
-    uvicorn.run('backend.app.main:app',
-                host=host if host is not None else os.environ.get('DBSHOOTER_HOST', '0.0.0.0'),
-                port=port if port is not None else int(os.environ.get('DBSHOOTER_PORT', '5718')),
+    resolved_host = host if host is not None else os.environ.get('DBSHOOTER_HOST', '127.0.0.1')
+    resolved_port = port if port is not None else int(os.environ.get('DBSHOOTER_PORT', '5718'))
+    _warn_if_exposed(resolved_host)
+    uvicorn.run('backend.app.main:app', host=resolved_host, port=resolved_port,
                 reload=dev or os.environ.get('DBSHOOTER_DEV') == '1')
+
+
+def _warn_if_exposed(host: str) -> None:
+    """监听非本机地址时提示风险:没设令牌等于把数据库连接面板公开给整个网络。"""
+    if host in ('127.0.0.1', 'localhost', '::1'):
+        return
+    if os.environ.get('DBSHOOTER_TOKEN'):
+        warn(f'监听 {host},已启用令牌校验(DBSHOOTER_TOKEN)')
+        return
+    warn(f'警告:监听 {host} 且未设置 DBSHOOTER_TOKEN,同网络内任何人都能访问本服务的'
+         '连接与数据。需要暴露时请设置随机令牌后再启动:'
+         'DBSHOOTER_TOKEN=<随机字符串> dbs serve --host ' + host)
 
 
 @settings_app.command('get')

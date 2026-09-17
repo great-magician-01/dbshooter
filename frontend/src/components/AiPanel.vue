@@ -32,7 +32,14 @@ async function send() {
   const q = question.value.trim()
   if (!q || ai.generating) return
   question.value = ''
-  await ai.ask(q, workspace.activeTab?.connection_id ?? null)
+  try {
+    await ai.ask(q, workspace.activeTab?.connection_id ?? null)
+  } catch (e: any) {
+    // 失败(会话创建失败 / 断线)时把问题还回输入框,避免用户重打;不接住会变成 unhandled rejection
+    question.value = q
+    toast(e?.message ?? '请求失败', 'err')
+    return
+  }
   scrollBottom()
   // 流式期间持续滚动
   stopScrollTimer()
@@ -42,11 +49,23 @@ async function send() {
   }, 200)
 }
 
+/**
+ * SQL 落点必须在生成它的那个连接上(会话的 connection_id,即 ask 时 payload.conn_id 用的连接):
+ * 优先复用该连接的 SQL 页签,没有就新建一个。
+ * 绝不复用其他连接的页签 —— 否则 SQL 会跑到另一个库上执行(同 SqlPane 的连接绑定原则)。
+ */
 function targetSqlTab() {
+  const cid = ai.connForSession(ai.currentSessionId)
   const active = workspace.activeTab
-  if (active?.type === 'sql') return active
-  const any = workspace.tabs.find(t => t.type === 'sql')
-  return any ?? workspace.addTab({ type: 'sql', connection_id: active?.connection_id ?? null })
+  if (active?.type === 'sql' && (active.connection_id ?? null) === cid) return active
+  const matched = workspace.tabs.find(t => t.type === 'sql' && (t.connection_id ?? null) === cid)
+  return matched ?? workspace.addTab({ type: 'sql', connection_id: cid })
+}
+
+/** 取消当前生成:本地自救(摘 handler + 复位状态),服务端任务的中断由后端负责 */
+function cancelAsk() {
+  ai.cancelAsk()
+  stopScrollTimer()
 }
 
 function insertSql(sql: string, run: boolean) {
@@ -187,6 +206,7 @@ onBeforeUnmount(() => {
     <div class="box">
       <textarea v-model="question" placeholder="例如:查一下上个月成交额最高的 10 个用户…"
                 @keydown.enter.exact.prevent="send" />
+      <button v-if="ai.generating" class="ai-cancel" title="取消本次生成" @click="cancelAsk">取消</button>
       <button class="ai-send" :disabled="ai.generating" title="发送" @click="send">
         <svg width="13" height="13" viewBox="0 0 13 13"><path d="M1.5 6.5h9M7 3l3.5 3.5L7 10" stroke="currentColor" stroke-width="1.6" fill="none" /></svg>
       </button>

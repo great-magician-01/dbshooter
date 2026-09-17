@@ -8,7 +8,10 @@ vi.mock('@/api/http', () => ({
   post: vi.fn(async () => ({ ok: true, message: 'ok', item: { id: 'x' } })),
 }))
 
+import { post } from '@/api/http'
 import ConnectionDialog from '@/components/dialogs/ConnectionDialog.vue'
+import { useConnectionsStore } from '@/stores/connections'
+import { useUiStore } from '@/stores/ui'
 
 describe('ConnectionDialog', () => {
   beforeEach(() => setActivePinia(createPinia()))
@@ -40,5 +43,17 @@ describe('ConnectionDialog', () => {
     const text = w.text()
     expect(text).toContain('DB 索引')
     expect(text).not.toContain('用户名')
+  })
+
+  it('编辑已有连接:测试连接同传 {id, config},让后端回填已存密码', async () => {
+    const ui = useUiStore()
+    const conns = useConnectionsStore()
+    conns.items = [{ id: 'c1', name: '本地', type: 'mysql', host: '127.0.0.1', port: 3306,
+      database: 'demo', username: 'root', has_password: true, params: {}, readonly: false }]
+    ui.editingConnection = 'c1'
+    const w = mount(ConnectionDialog)
+    await w.findAll('.modal-foot .btn')[0].trigger('click')   // 测试连接
+    expect(post).toHaveBeenCalledWith('/api/connections/test',
+      expect.objectContaining({ id: 'c1', config: expect.objectContaining({ id: 'c1' }) }))
   })
 })
