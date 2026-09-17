@@ -3,6 +3,10 @@ uvicorn[standard]>=0.29
 pydantic>=2.6
 aiosqlite>=0.20
 aiomysql>=0.2.0
+# aiomysql 0.3.x 仍从 pymysql.converters 导入 escape_dict / escape_bytes_prefixed,
+# PyMySQL 1.2.1+ 已移除这些符号(干净环境装新版直接 ImportError)。
+# aiomysql 发布兼容新版后可解除此钉。
+PyMySQL>=1.1,<1.2.1
 asyncpg>=0.29
 redis>=5.0
 motor>=3.4
