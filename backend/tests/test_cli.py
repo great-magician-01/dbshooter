@@ -1,0 +1,390 @@
+"""CLI 测试:TestClient 直插 ApiClient,走真实路由但不起真实端口。
+
+cli fixture 把 cli.state.make_client 替换为指向内存 app 的客户端,命令层零改动。
+"""
+from __future__ import annotations
+
+import pytest
+from typer.testing import CliRunner
+
+from backend.cli.client import ApiClient
+from backend.cli.main import app
+
+
+@pytest.fixture()
+def cli(client, monkeypatch) -> CliRunner:
+    """把 CLI 的服务端指向内存中的 app(conftest 的 TestClient)。"""
+    import backend.cli.state as cli_state
+    monkeypatch.setattr(cli_state, 'make_client', lambda *a, **k: ApiClient(client))
+    return CliRunner()
+
+
+def _add_sqlite(cli: CliRunner, sqlite_db: str, name: str = '本地库', exact: bool = False) -> str:
+    """建 sqlite 连接并返回实际名称。元数据库全会话共享,默认带随机后缀避免跨用例撞名。"""
+    import uuid
+    real = name if exact else f'{name}-{uuid.uuid4().hex[:6]}'
+    r = cli.invoke(app, ['conn', 'add', '--name', real, '--type', 'sqlite',
+                         '--param', f'path={sqlite_db}'])
+    assert r.exit_code == 0, r.output
+    return real
+
+
+def test_health(cli):
+    r = cli.invoke(app, ['health'])
+    assert r.exit_code == 0, r.output
+    assert 'sqlite' in r.output
+
+
+def test_conn_add_and_list(cli, sqlite_db):
+    name = _add_sqlite(cli, sqlite_db)
+    r = cli.invoke(app, ['conn', 'list'])
+    assert r.exit_code == 0, r.output
+    assert name in r.output and 'sqlite' in r.output
+    r = cli.invoke(app, ['conn', 'list', '--format', 'json'])
+    assert r.exit_code == 0 and name in r.output
+
+
+def test_conn_resolve_by_name_and_test(cli, sqlite_db):
+    name = _add_sqlite(cli, sqlite_db)
+    r = cli.invoke(app, ['conn', 'test', name])
+    assert r.exit_code == 0, r.output
+    assert '连接成功' in r.output
+
+
+def test_conn_resolve_by_id_prefix(cli, sqlite_db):
+    import json
+    name = _add_sqlite(cli, sqlite_db)
+    items = json.loads(cli.invoke(app, ['conn', 'list', '--format', 'json']).output)
+    # 元数据库会话共享且 created_at 秒精度,不能假定 [0] 是刚建的,按名找回
+    cid = next(c['id'] for c in items if c['name'] == name)
+    r = cli.invoke(app, ['conn', 'test', cid[:8]])
+    assert r.exit_code == 0, r.output
+
+
+def test_conn_update(cli, sqlite_db):
+    import json
+    name = _add_sqlite(cli, sqlite_db)
+    r = cli.invoke(app, ['conn', 'update', name, '--name', f'{name}-改', '--readonly'])
+    assert r.exit_code == 0, r.output
+    items = json.loads(cli.invoke(app, ['conn', 'list', '--format', 'json']).output)
+    row = next(c for c in items if c['name'] == f'{name}-改')
+    assert row['readonly'] is True
+    assert row['params']['path'] == sqlite_db   # 未传的字段保持原值
+    r = cli.invoke(app, ['query', f'{name}-改', "insert into users(name) values ('x')"])
+    assert r.exit_code == 1 and '只读' in r.output   # readonly 生效
+
+
+def test_conn_resolve_ambiguous(cli, sqlite_db):
+    import uuid
+    dup = f'重名-{uuid.uuid4().hex[:6]}'
+    _add_sqlite(cli, sqlite_db, name=dup, exact=True)
+    _add_sqlite(cli, sqlite_db, name=dup, exact=True)
+    r = cli.invoke(app, ['conn', 'test', dup])
+    assert r.exit_code == 1
+    assert '匹配到多个' in r.output
+
+
+def test_conn_resolve_not_found(cli):
+    r = cli.invoke(app, ['conn', 'test', '不存在'])
+    assert r.exit_code == 1
+    assert '找不到连接' in r.output
+
+
+def test_conn_test_inline_config(cli, sqlite_db):
+    r = cli.invoke(app, ['conn', 'test', '--type', 'sqlite', '--param', f'path={sqlite_db}'])
+    assert r.exit_code == 0, r.output
+    assert '连接成功' in r.output
+
+
+def test_conn_test_bad_config_fails(cli, tmp_path):
+    r = cli.invoke(app, ['conn', 'test', '--type', 'sqlite',
+                         '--param', f'path={tmp_path}/nope/x.db'])
+    assert r.exit_code == 1
+    assert '连接失败' in r.output
+
+
+def test_conn_delete(cli, sqlite_db):
+    name = _add_sqlite(cli, sqlite_db)
+    r = cli.invoke(app, ['conn', 'delete', name, '-y'])
+    assert r.exit_code == 0, r.output
+    assert name not in cli.invoke(app, ['conn', 'list']).output
+
+
+def test_tree_depth2(cli, sqlite_db, sqlite_conn_id):
+    r = cli.invoke(app, ['tree', sqlite_conn_id, '--depth', '2'])
+    assert r.exit_code == 0, r.output
+    assert 'main/' in r.output and 'users' in r.output and 'v_users' in r.output
+
+
+def test_tree_json(cli, sqlite_conn_id):
+    r = cli.invoke(app, ['tree', sqlite_conn_id, '--format', 'json'])
+    assert r.exit_code == 0, r.output
+    assert '"main"' in r.output
+
+
+def test_ddl(cli, sqlite_conn_id):
+    r = cli.invoke(app, ['ddl', sqlite_conn_id, 'users', 'v_users'])
+    assert r.exit_code == 0, r.output
+    assert 'CREATE TABLE users' in r.output and 'CREATE VIEW v_users' in r.output
+
+
+def test_ddl_missing_table(cli, sqlite_conn_id):
+    r = cli.invoke(app, ['ddl', sqlite_conn_id, 'nope'])
+    assert r.exit_code == 1
+
+
+# ── M2: query / export / history ──
+
+def test_query_table(cli, sqlite_conn_id):
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select id, name from users order by id',
+                         '--format', 'table'])
+    assert r.exit_code == 0, r.output
+    assert '张三' in r.output and '王五' in r.output and '共 3 行' in r.output
+
+
+def test_query_json(cli, sqlite_conn_id):
+    import json
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select name from users order by id',
+                         '--format', 'json'])
+    assert r.exit_code == 0, r.output
+    results = json.loads(r.output)
+    assert results[0]['rows'][0] == ['张三']
+
+
+def test_query_csv_and_raw(cli, sqlite_conn_id):
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select name from users order by id',
+                         '--format', 'csv'])
+    assert r.exit_code == 0, r.output
+    assert r.output.splitlines()[0] == 'name'
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select city from users where id=1',
+                         '--format', 'raw'])
+    assert r.exit_code == 0, r.output
+    assert r.output.strip() == '上海'
+
+
+def test_query_affected(cli, sqlite_conn_id):
+    r = cli.invoke(app, ['query', sqlite_conn_id,
+                         "insert into users(name, city) values ('赵六','杭州')",
+                         '--format', 'json'])
+    assert r.exit_code == 0, r.output
+    assert '"affected": 1' in r.output
+
+
+def test_query_error_exit1(cli, sqlite_conn_id):
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select * from nope'])
+    assert r.exit_code == 1
+    assert 'nope' in r.output
+
+
+def test_query_readonly_blocked(cli, sqlite_db):
+    """只读拦截由服务端兜底,CLI 原样透出错误并以 1 退出。"""
+    import uuid
+    name = f'ro-{uuid.uuid4().hex[:6]}'   # test_api.py 也建过名为 ro 的连接,避开
+    r = cli.invoke(app, ['conn', 'add', '--name', name, '--type', 'sqlite', '--readonly',
+                         '--param', f'path={sqlite_db}'])
+    assert r.exit_code == 0, r.output
+    r = cli.invoke(app, ['query', name, "insert into users(name) values ('x')"])
+    assert r.exit_code == 1
+    assert '只读' in r.output
+
+
+def test_query_from_file_and_stdin(cli, sqlite_conn_id, tmp_path):
+    f = tmp_path / 'q.sql'
+    f.write_text('select count(*) as n from users', encoding='utf-8')
+    r = cli.invoke(app, ['query', sqlite_conn_id, '-f', str(f), '--format', 'raw'])
+    assert r.exit_code == 0, r.output
+    assert r.output.strip() == '3'
+    r = cli.invoke(app, ['query', sqlite_conn_id, '--stdin', '--format', 'raw'],
+                   input='select count(*) from v_users')
+    assert r.exit_code == 0, r.output
+    assert r.output.strip() == '3'
+
+
+def test_query_out_csv(cli, sqlite_conn_id, tmp_path):
+    out = tmp_path / 'o.csv'
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select * from users order by id',
+                         '-o', str(out)])
+    assert r.exit_code == 0, r.output
+    text = out.read_text(encoding='utf-8-sig')
+    assert text.splitlines()[0] == 'id,name,city' and '张三' in text
+
+
+def test_export(cli, sqlite_conn_id, tmp_path):
+    out = tmp_path / 'big.csv'
+    r = cli.invoke(app, ['export', sqlite_conn_id, 'select * from users', '-o', str(out)])
+    assert r.exit_code == 0, r.output
+    text = out.read_text(encoding='utf-8-sig')
+    assert text.splitlines()[0] == 'id,name,city'
+    assert len(text.splitlines()) == 4
+
+
+def test_history(cli, sqlite_conn_id):
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select 1'])
+    assert r.exit_code == 0, r.output
+    r = cli.invoke(app, ['history', '--format', 'json'])
+    assert r.exit_code == 0, r.output
+    import json
+    items = json.loads(r.output)
+    assert any(h['stmt'] == 'select 1' and h['status'] == 'done' for h in items)
+
+
+# ── M3: ai ──
+
+def test_ws_url():
+    from backend.cli.wsclient import ws_url
+    assert ws_url('http://127.0.0.1:5718', None) == 'ws://127.0.0.1:5718/ws'
+    assert ws_url('https://example.com/', 'tk') == 'wss://example.com/ws?token=tk'
+
+
+def _fake_ai_events(events):
+    """生成 stream_ai_events 桩:events 为 (event, data) 列表。"""
+    def fake(url, payload, timeout):
+        yield from events
+    return fake
+
+
+def test_ai_ask_streams(cli, sqlite_conn_id, monkeypatch):
+    import backend.cli.commands.ai as ai_cmd
+    monkeypatch.setattr(ai_cmd, 'stream_ai_events', _fake_ai_events([
+        ('ai.started', {}),
+        ('ai.tool', {'name': 'list_tables', 'args': '{}', 'status': 'done', 'summary': '3 张表'}),
+        ('ai.token', {'delta': '查询'}), ('ai.token', {'delta': '如下'}),
+        ('ai.done', {'text': '查询如下', 'sql': 'SELECT * FROM users', 'elapsed_ms': 12}),
+    ]))
+    r = cli.invoke(app, ['ai', 'ask', sqlite_conn_id, '查所有用户'])
+    assert r.exit_code == 0, r.output
+    assert '查询如下' in r.output and 'SELECT * FROM users' in r.output
+    # 自动建会话,且标题取问题前缀
+    import json
+    sessions = json.loads(cli.invoke(app, ['ai', 'sessions', 'list', '--format', 'json']).output)
+    assert any(s['title'].startswith('查所有用户') for s in sessions)
+
+
+def test_ai_ask_sql_only(cli, sqlite_conn_id, monkeypatch):
+    import backend.cli.commands.ai as ai_cmd
+    monkeypatch.setattr(ai_cmd, 'stream_ai_events', _fake_ai_events([
+        ('ai.token', {'delta': '一些解释文字'}),
+        ('ai.done', {'text': '一些解释文字', 'sql': 'SELECT 1', 'elapsed_ms': 1}),
+    ]))
+    r = cli.invoke(app, ['ai', 'ask', sqlite_conn_id, 'q', '--sql'])
+    assert r.exit_code == 0, r.output
+    assert r.output.strip() == 'SELECT 1'
+
+
+def test_ai_ask_error(cli, sqlite_conn_id, monkeypatch):
+    import backend.cli.commands.ai as ai_cmd
+    monkeypatch.setattr(ai_cmd, 'stream_ai_events', _fake_ai_events([
+        ('ai.error', {'message': '尚未配置生效的 AI Provider'}),
+    ]))
+    r = cli.invoke(app, ['ai', 'ask', sqlite_conn_id, 'q'])
+    assert r.exit_code == 1
+    assert '尚未配置' in r.output
+
+
+def test_ai_providers_crud(cli):
+    import uuid
+    pname = f'DS-{uuid.uuid4().hex[:6]}'   # test_api.py 也建过 DeepSeek,避开重名
+    r = cli.invoke(app, ['ai', 'providers', 'add', '--name', pname,
+                         '--base-url', 'https://api.deepseek.com/v1', '--model', 'deepseek-chat',
+                         '--api-key', 'sk-x', '--activate'])
+    assert r.exit_code == 0, r.output
+    r = cli.invoke(app, ['ai', 'providers', 'list'])
+    assert r.exit_code == 0, r.output
+    assert pname in r.output and 'deepseek-chat' in r.output
+    import json
+    items = json.loads(cli.invoke(app, ['ai', 'providers', 'list', '--format', 'json']).output)
+    mine = next(p for p in items if p['name'] == pname)
+    assert mine['is_active']   # add --activate 已生效
+    pid = mine['id']
+    r = cli.invoke(app, ['ai', 'providers', 'activate', pid[:8]])
+    assert r.exit_code == 0, r.output
+
+
+def test_ai_providers_test_fails_gracefully(cli):
+    """指向不可达地址的 provider,test 命令业务失败退出码 1。"""
+    import uuid
+    bad = f'bad-{uuid.uuid4().hex[:6]}'
+    r = cli.invoke(app, ['ai', 'providers', 'add', '--name', bad,
+                         '--base-url', 'http://127.0.0.1:9/v1', '--model', 'm',
+                         '--api-key', 'k'])
+    assert r.exit_code == 0, r.output
+    import json
+    items = json.loads(cli.invoke(app, ['ai', 'providers', 'list', '--format', 'json']).output)
+    pid = next(p for p in items if p['name'] == bad)['id']
+    r = cli.invoke(app, ['ai', 'providers', 'test', pid[:8]])
+    assert r.exit_code == 1
+    assert '连接失败' in r.output
+
+
+# ── M4: settings / serve ──
+
+def test_settings_roundtrip(cli):
+    import uuid
+    k = f'cli-key-{uuid.uuid4().hex[:6]}'
+    r = cli.invoke(app, ['settings', 'set', k, 'v1'])
+    assert r.exit_code == 0, r.output
+    r = cli.invoke(app, ['settings', 'get', k])
+    assert r.exit_code == 0 and r.output.strip() == 'v1'
+    r = cli.invoke(app, ['settings', 'get', '--format', 'json'])
+    assert r.exit_code == 0 and k in r.output
+    r = cli.invoke(app, ['settings', 'get', '不存在的键'])
+    assert r.exit_code == 1
+
+
+def test_serve_registered():
+    """serve 是阻塞命令不进真跑,验证已注册(直接查注册表,help 里 --server 会误命中 'serve')。"""
+    names = [c.name for c in app.registered_commands]
+    assert 'serve' in names and 'query' in names and 'export' in names
+
+
+# ── review 修复回归 ──
+
+def test_ws_url_token_quoted():
+    """token 含 +/& 必须 URL 编码,否则服务端 parse_qsl 还原错误。"""
+    from backend.cli.wsclient import ws_url
+    assert ws_url('http://h:1', 'a+b&c=d') == 'ws://h:1/ws?token=a%2Bb%26c%3Dd'
+
+
+def test_command_kind_csv_not_empty(cli, sqlite_conn_id, capsys):
+    """redis 类 command 结果在 csv/raw 下也要有输出(管道默认 csv,不能静默空)。"""
+    from backend.cli.output import print_results
+    results = [{'kind': 'command', 'columns': [{'name': 'count', 'type': 'int'}],
+                'rows': [[3]], 'raw': 3}]
+    print_results(results, 'csv', None)
+    out = capsys.readouterr().out
+    assert 'count' in out and '3' in out
+    print_results(results, 'raw', None)
+    assert '3' in capsys.readouterr().out
+
+
+def test_query_file_gbk_and_bom(cli, sqlite_db, tmp_path):
+    """GBK 文件与 UTF-8-BOM 文件都能正确读入(BOM 不得触发只读误判)。"""
+    import uuid
+    name = f'ro-{uuid.uuid4().hex[:6]}'
+    assert cli.invoke(app, ['conn', 'add', '--name', name, '--type', 'sqlite', '--readonly',
+                            '--param', f'path={sqlite_db}']).exit_code == 0
+    gbk = tmp_path / 'gbk.sql'
+    gbk.write_bytes("select name from users where city='上海'".encode('gbk'))
+    r = cli.invoke(app, ['query', name, '-f', str(gbk), '--format', 'raw'])
+    assert r.exit_code == 0, r.output
+    assert '张三' in r.output
+    bom = tmp_path / 'bom.sql'
+    bom.write_bytes('﻿select 1'.encode('utf-8'))
+    r = cli.invoke(app, ['query', name, '-f', str(bom), '--format', 'raw'])
+    assert r.exit_code == 0, r.output   # 只读连接下仍放行 → BOM 已剥掉
+    assert r.output.strip() == '1'
+
+
+def test_query_missing_file_no_traceback(cli, sqlite_conn_id):
+    """文件不存在:业务失败退出码 1,不抛裸 traceback。"""
+    r = cli.invoke(app, ['query', sqlite_conn_id, '-f', 'no-such-file.sql'])
+    assert r.exit_code == 1
+    assert 'Traceback' not in r.output
+
+
+def test_export_has_bom(cli, sqlite_conn_id, tmp_path):
+    """export 与 query -o 统一带 BOM(Excel 直开不乱码)。"""
+    out = tmp_path / 'big.csv'
+    r = cli.invoke(app, ['export', sqlite_conn_id, 'select * from users', '-o', str(out)])
+    assert r.exit_code == 0, r.output
+    assert out.read_bytes().startswith(b'\xef\xbb\xbf')
