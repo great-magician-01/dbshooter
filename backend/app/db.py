@@ -253,7 +253,8 @@ def set_active_provider(pid: str) -> None:
 # ──────────────────────── AI 会话与消息 ────────────────────────
 
 def list_sessions() -> list[dict[str, Any]]:
-    return q('SELECT * FROM ai_sessions ORDER BY updated_at DESC')
+    # now() 精度为秒,同一秒内的并列用 rowid 打破(最新插入在前),否则顺序不稳定
+    return q('SELECT * FROM ai_sessions ORDER BY updated_at DESC, rowid DESC')
 
 
 def create_session(d: dict[str, Any]) -> dict[str, Any]:
@@ -347,7 +348,8 @@ def add_history(connection_id: str, stmt: str, elapsed_ms: int,
 
 
 def list_history(limit: int = 100) -> list[dict[str, Any]]:
-    return q('SELECT * FROM query_history ORDER BY executed_at DESC LIMIT ?', (limit,))
+    # 同一秒内的并列用 rowid 打破(最新插入在前),与 list_sessions 一致
+    return q('SELECT * FROM query_history ORDER BY executed_at DESC, rowid DESC LIMIT ?', (limit,))
 
 
 # ──────────────────────── settings ────────────────────────
