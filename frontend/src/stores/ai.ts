@@ -96,35 +96,65 @@ export const useAiStore = defineStore('ai', () => {
       if (s) s.title = title
     }
     messages.value.push({ role: 'user', text: question, sql: null })
-    const assistant: AiMessage = { role: 'assistant', text: '', sql: null, streaming: true }
-    messages.value.push(assistant)
+    messages.value.push({ role: 'assistant', text: '', sql: null, streaming: true })
+    // 注意:push 进去的是 raw 对象,之后必须经 messages.value[aIdx] 代理读写,
+    // 否则流式增量不触发响应式(打字机失效)
+    const aIdx = messages.value.length - 1
     generating.value = true
+    let finished = false
 
-    await ws.send('ai.text2sql',
-      { session_id: sid, conn_id: effConnId, question },
-      (ev) => {
-        if (ev.event === 'ai.token') assistant.text += ev.data.delta
-        else if (ev.event === 'ai.tool') {
-          // 工具轨迹按 call_id 合并(running 占位 → done/error 更新)
-          assistant.tools ??= []
-          const d = ev.data as AiToolTrace
-          const idx = assistant.tools.findIndex(t => t.call_id && t.call_id === d.call_id)
-          if (idx >= 0) assistant.tools[idx] = { ...assistant.tools[idx], ...d }
-          else assistant.tools.push(d)
-        } else if (ev.event === 'ai.done') {
-          assistant.sql = ev.data.sql
-          if (ev.data.tools) assistant.tools = ev.data.tools   // 以服务端轨迹为准
-          assistant.streaming = false
-          assistant.elapsed_ms = ev.data.elapsed_ms
-          generating.value = false
-          ws.done(ev.id)
-        } else if (ev.event === 'ai.error') {
-          assistant.text = ev.data.message
-          assistant.streaming = false
-          generating.value = false
-          ws.done(ev.id)
+    /** 终态收尾:无论消息是否还在当前会话,都要复位状态并释放 WS handler */
+    const finish = (reqId: string) => {
+      finished = true
+      generating.value = false
+      ws.done(reqId)
+    }
+
+    try {
+      await ws.send('ai.text2sql',
+        { session_id: sid, conn_id: effConnId, question },
+        (ev) => {
+          const m = messages.value[aIdx]
+          if (ev.event === 'ai.done') {
+            if (m) {
+              m.sql = ev.data.sql
+              if (ev.data.tools) m.tools = ev.data.tools   // 以服务端轨迹为准
+              m.elapsed_ms = ev.data.elapsed_ms
+              m.streaming = false
+            }
+            finish(ev.id)
+          } else if (ev.event === 'ai.error' || ev.event === 'error') {
+            // error:连接断开等服务端兜底事件,按 ai.error 同样收尾
+            if (m) {
+              m.text = ev.data.message ?? ev.data.error ?? '生成失败'
+              m.streaming = false
+            }
+            finish(ev.id)
+          } else if (!m) {
+            return                       // 用户已切换会话,中途事件直接丢弃
+          } else if (ev.event === 'ai.token') {
+            m.text += ev.data.delta
+          } else if (ev.event === 'ai.tool') {
+            // 工具轨迹按 call_id 合并(running 占位 → done/error 更新)
+            m.tools ??= []
+            const d = ev.data as AiToolTrace
+            const idx = m.tools.findIndex(t => t.call_id && t.call_id === d.call_id)
+            if (idx >= 0) m.tools[idx] = { ...m.tools[idx], ...d }
+            else m.tools.push(d)
+          }
+        })
+    } catch (e: any) {
+      // 连接建立失败(断线 / token 失配)时不会再有终态事件,这里兜底复位,
+      // 否则 generating 永久为 true,输入框与发送按钮永久禁用
+      if (!finished) {
+        const m = messages.value[aIdx]
+        if (m) {
+          m.text = `请求失败:${e?.message ?? '未知错误'}`
+          m.streaming = false
         }
-      })
+        finish('')
+      }
+    }
   }
 
   return { providers, activeProvider, sessions, currentSessionId, messages,

@@ -14,6 +14,18 @@ const form = reactive({ id: null as string | null, name: '', base_url: '', api_k
 const testMsg = ref<{ ok: boolean; text: string } | null>(null)
 const testing = ref(false)
 
+// 访问令牌:与服务端 DBSHOOTER_TOKEN 对应,api/http.ts 与 api/ws.ts 读的就是 localStorage 的 ds-token
+const token = ref(localStorage.getItem('ds-token') ?? '')
+
+function saveToken() {
+  const t = token.value.trim()
+  if (t) localStorage.setItem('ds-token', t)
+  else localStorage.removeItem('ds-token')
+  toast('已保存,页面即将刷新', 'ok')
+  // 已建立的连接仍带着旧令牌,刷新后 REST 头与 WS 地址才是新的
+  setTimeout(() => location.reload(), 600)
+}
+
 onMounted(async () => {
   await ai.loadProviders()
   if (ai.providers.length) pick(0)
@@ -105,6 +117,12 @@ async function test() {
             <button class="btn primary" @click="save">保存</button>
           </div>
         </div>
+      </div>
+      <div class="settings-foot">
+        <label>访问令牌</label>
+        <input v-model="token" type="password" placeholder="服务端未启用令牌时留空">
+        <button class="btn" @click="saveToken">保存</button>
+        <span class="hint">服务端设置环境变量 DBSHOOTER_TOKEN 后,REST 请求与 WebSocket 连接都需要该令牌;保存后页面会自动刷新。</span>
       </div>
     </div>
   </div>

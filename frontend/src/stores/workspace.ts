@@ -6,7 +6,6 @@ import { get, post } from '@/api/http'
 import type { Tab, TabType } from '@/types'
 
 let seq = 1
-let saveTimer: ReturnType<typeof setTimeout> | null = null
 
 export const useWorkspaceStore = defineStore('workspace', () => {
   const tabs = ref<Tab[]>([])
@@ -29,14 +28,28 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       { ids: tabs.value.map(t => t.id), active_id: activeId.value }).catch(() => {})
   }
 
+  /** 待落库的防抖定时器:按页签分桶,A 页签的待发保存不会被 B 页签取消 */
+  const saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  function clearSaveTimer(id: string) {
+    const t = saveTimers.get(id)
+    if (t) { clearTimeout(t); saveTimers.delete(id) }
+  }
+
   function persistTab(tab: Tab, debounce = false) {
-    const send = () => post('/api/workspace/tabs/save', {
-      id: tab.id, type: tab.type, title: tab.title, connection_id: tab.connection_id,
-      context: tab.context, content: tab.content, sort: tab.sort,
-    }).catch(() => {})
-    if (saveTimer) clearTimeout(saveTimer)
-    if (debounce) saveTimer = setTimeout(send, 800)
-    else send()
+    const send = (id: string) => {
+      // 定时器触发时按 id 取当前状态:期间内容可能又变了,且页签可能已被关闭
+      const cur = tabs.value.find(t => t.id === id)
+      if (!cur) return
+      post('/api/workspace/tabs/save', {
+        id: cur.id, type: cur.type, title: cur.title, connection_id: cur.connection_id,
+        context: cur.context, content: cur.content, sort: cur.sort,
+      }).catch(() => {})
+    }
+    clearSaveTimer(tab.id)
+    if (debounce)
+      saveTimers.set(tab.id, setTimeout(() => { saveTimers.delete(tab.id); send(tab.id) }, 800))
+    else send(tab.id)
   }
 
   function addTab(partial: { type: TabType; title?: string; connection_id?: string | null;
@@ -60,6 +73,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function closeTab(id: string) {
     const i = tabs.value.findIndex(t => t.id === id)
     if (i < 0) return
+    // 先取消待发的防抖保存:否则删除后定时器仍会 POST tabs/save(upsert)把页签复活
+    clearSaveTimer(id)
     tabs.value.splice(i, 1)
     post('/api/workspace/tabs/delete', { id }).catch(() => {})
     if (activeId.value === id)

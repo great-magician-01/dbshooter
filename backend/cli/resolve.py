@@ -9,6 +9,9 @@ from .errors import CliError
 
 def resolve_conn(client: ApiClient, ref: str) -> dict[str, Any]:
     """把用户输入的连接引用(id / id 前缀 / 名称)解析为连接记录。"""
+    if not ref.strip():
+        # 空 ref 会让 startswith('') 恒真:单连接时静默落到唯一连接上(危险)
+        raise CliError('请提供连接 id / 前缀 / 名称')
     items: list[dict[str, Any]] = client.get('/api/connections')['items']
     exact_id = [c for c in items if c['id'] == ref]
     if exact_id:

@@ -1,5 +1,6 @@
 /** ai store:Provider 单生效切换 + 会话消息解析 + WS 流式问答(http/ws 全部 mock)。 */
 import { createPinia, setActivePinia } from 'pinia'
+import { nextTick, watch } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/http', () => ({
@@ -72,6 +73,66 @@ describe('ai store · 会话', () => {
     expect(bot.text).toContain('SELECT 1;')
     expect(bot.sql).toBe('SELECT 1;')
     expect(bot.streaming).toBe(false)
+  })
+})
+
+describe('ai store · 流式响应式与失败路径', () => {
+  it('ask:每个 delta 都经代理写入,生成期间即可驱动视图(打字机)', async () => {
+    const ai = useAiStore()
+    const seen: string[] = []
+    // sync 刷新的 watcher:raw 对象直改不会触发,只有走响应式代理才会
+    const stop = watch(() => ai.messages[1]?.text ?? '', v => seen.push(v), { flush: 'sync' })
+    vi.mocked(ws.send).mockImplementationOnce(async (_t, _p, onEvent) => {
+      onEvent({ id: 'r', event: 'ai.token', data: { delta: '```sql\n' } })
+      await nextTick()
+      expect(seen).toContain('```sql\n')
+      onEvent({ id: 'r', event: 'ai.token', data: { delta: 'SELECT 1;' } })
+      await nextTick()
+      expect(seen).toContain('```sql\nSELECT 1;')
+      onEvent({ id: 'r', event: 'ai.done', data: { text: '', sql: 'SELECT 1;', elapsed_ms: 3 } })
+      return 'r'
+    })
+    await ai.ask('查一下', null)
+    stop()
+    expect(ai.messages[1].text).toBe('```sql\nSELECT 1;')
+    expect(ai.messages[1].sql).toBe('SELECT 1;')
+    expect(ai.messages[1].streaming).toBe(false)
+  })
+
+  it('ask:发送失败(断线)时复位 generating 并提示,不会永久卡死', async () => {
+    const ai = useAiStore()
+    vi.mocked(ws.send).mockRejectedValueOnce(new Error('WebSocket 连接已断开'))
+    await ai.ask('查用户', null)
+    expect(ai.generating).toBe(false)
+    expect(ai.messages[1].streaming).toBe(false)
+    expect(ai.messages[1].text).toContain('请求失败')
+  })
+
+  it('ask:服务端兜底 error 事件按终态收尾', async () => {
+    const ai = useAiStore()
+    vi.mocked(ws.send).mockImplementationOnce(async (_t, _p, onEvent) => {
+      onEvent({ id: 'r', event: 'error', data: { message: '连接已断开,请重试' } })
+      return 'r'
+    })
+    await ai.ask('查用户', null)
+    expect(ai.generating).toBe(false)
+    expect(ai.messages[1].streaming).toBe(false)
+    expect(ai.messages[1].text).toContain('连接已断开')
+    expect(ws.done).toHaveBeenCalledWith('r')
+  })
+
+  it('ask:生成中切换会话,迟到的流事件不污染新会话', async () => {
+    const ai = useAiStore()
+    let emit: (ev: any) => void = () => {}
+    vi.mocked(ws.send).mockImplementationOnce(async (_t, _p, onEvent) => { emit = onEvent; return 'r' })
+    await ai.ask('查用户', null)
+    vi.mocked(get).mockResolvedValueOnce({ items: [{ id: 'm9', role: 'user', content: '别的会话' }] })
+    await ai.selectSession('s2')
+    emit({ id: 'r', event: 'ai.token', data: { delta: 'X' } })
+    expect(ai.messages).toHaveLength(1)
+    expect(ai.messages[0].text).toBe('别的会话')
+    emit({ id: 'r', event: 'ai.done', data: { sql: 'SELECT 1' } })
+    expect(ai.generating).toBe(false)   // 状态仍要复位
   })
 })
 

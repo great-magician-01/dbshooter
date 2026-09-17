@@ -154,11 +154,13 @@ def get_connection(cid: str) -> dict[str, Any] | None:
 def create_connection(d: dict[str, Any]) -> dict[str, Any]:
     cid = d.get('id') or new_id()
     t = now()
+    # 可选字段经 pydantic 缺省为 None,落库统一成空值
     run('INSERT INTO connections(id,name,type,host,port,database,username,password_enc,'
         'params_json,readonly,sort,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        (cid, d['name'], d['type'], d.get('host', ''), d.get('port'), d.get('database', ''),
-         d.get('username', ''), security.encrypt(d.get('password', '')),
-         json.dumps(d.get('params') or {}), int(d.get('readonly', False)),
+        (cid, d['name'], d['type'], d.get('host') or '', d.get('port'),
+         d.get('database') or '', d.get('username') or '',
+         security.encrypt(d.get('password') or ''),
+         json.dumps(d.get('params') or {}), int(bool(d.get('readonly'))),
          d.get('sort', 0), t, t))
     return _conn_out(_must('SELECT * FROM connections WHERE id=?', (cid,)))
 
@@ -168,13 +170,19 @@ def update_connection(d: dict[str, Any]) -> dict[str, Any] | None:
     old = one('SELECT * FROM connections WHERE id=?', (cid,))
     if not old:
         return None
-    # 密码留空 = 不修改
+    # 合并语义:字段值为 None = 未传 = 沿用旧值(与 CLI 的更新语义一致)。
+    # 旧实现是全量覆盖,调用方漏传 readonly/params 会静默清零 —— 只读连接被意外解除。
     pwd = security.encrypt(d['password']) if d.get('password') else old['password_enc']
+    host = old['host'] if d.get('host') is None else d['host']
+    port = old['port'] if d.get('port') is None else d['port']
+    database = old['database'] if d.get('database') is None else d['database']
+    username = old['username'] if d.get('username') is None else d['username']
+    params = json.loads(old['params_json'] or '{}') if d.get('params') is None else d['params']
+    readonly = bool(old['readonly']) if d.get('readonly') is None else d['readonly']
     run('UPDATE connections SET name=?,type=?,host=?,port=?,database=?,username=?,'
         'password_enc=?,params_json=?,readonly=?,updated_at=? WHERE id=?',
-        (d['name'], d['type'], d.get('host', ''), d.get('port'), d.get('database', ''),
-         d.get('username', ''), pwd, json.dumps(d.get('params') or {}),
-         int(d.get('readonly', False)), now(), cid))
+        (d['name'], d['type'], host, port, database, username, pwd,
+         json.dumps(params or {}), int(readonly), now(), cid))
     return _conn_out(_must('SELECT * FROM connections WHERE id=?', (cid,)))
 
 

@@ -52,7 +52,9 @@ def ddl(ctx: typer.Context,
     """打印表 DDL(仅 SQL 类连接)。"""
     client = get_state(ctx).client()
     row = resolve_conn(client, conn)
-    text: str = client.get(f"/api/connections/{row['id']}/ddl", tables=','.join(tables))['ddl']
+    # 表名用重复查询参数(?tables=a&tables=b)传,避免逗号拼接把带逗号的表名拆坏;
+    # 服务端 /ddl 路由已支持该形式(同时兼容旧的逗号分隔)
+    text: str = client.get(f"/api/connections/{row['id']}/ddl", tables=tables)['ddl']
     if not text.strip():
         raise CliError(f'未取到 DDL,确认表名是否正确: {", ".join(tables)}')
     print(text)

@@ -25,6 +25,29 @@ def test_split_escaped_quote():
     assert split_sql(r"SELECT 'it\'s;x'; SELECT 2") == [r"SELECT 'it\'s;x'", 'SELECT 2']
 
 
+def test_split_backslash_dialects():
+    """反斜杠转义是方言差异:MySQL 当转义,PG(standard_conforming_strings)/SQLite 当字面量。"""
+    stmt = r"SELECT 'a\'; SELECT 'b'"
+    # MySQL: \' 被转义 → 字符串吞掉引号,整段是一条语句
+    assert split_sql(stmt, backslash_escapes=True) == [stmt]
+    # PG/SQLite: \ 是字面量,'a\' 已经闭合 → 两条语句
+    assert split_sql(stmt, backslash_escapes=False) == ["SELECT 'a\\'", "SELECT 'b'"]
+
+
+def test_split_dollar_quoting():
+    """PG 函数体常用 $$...$$,内部分号不可拆。"""
+    fn = ('CREATE FUNCTION f() RETURNS int AS $$\n'
+          'BEGIN\n  PERFORM 1;\n  RETURN 1;\nEND\n$$ LANGUAGE plpgsql')
+    assert split_sql(fn + '; SELECT 2') == [fn, 'SELECT 2']
+    # 带 tag 的界定符:tag 不匹配不闭合
+    tagged = 'SELECT $tag$a;b$tag$'
+    assert split_sql(tagged + '; SELECT 2') == [tagged, 'SELECT 2']
+    # 未配对的 $$ 整段保留(交由数据库报错,而不是拆烂)
+    assert split_sql('SELECT $$abc;def') == ['SELECT $$abc;def']
+    # 占位符 $1 等不受影响
+    assert split_sql('SELECT $1; SELECT $2') == ['SELECT $1', 'SELECT $2']
+
+
 def test_is_query():
     assert is_query('SELECT 1')
     assert is_query('  (select 1)')

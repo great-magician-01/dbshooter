@@ -3,7 +3,7 @@ import type { WsEvent } from '@/types'
 
 type EventHandler = (ev: WsEvent) => void
 
-class WsClient {
+export class WsClient {
   private socket: WebSocket | null = null
   private opening: Promise<void> | null = null
   private handlers = new Map<string, EventHandler>()
@@ -19,7 +19,12 @@ class WsClient {
       const ws = new WebSocket(url)
       ws.onopen = () => { this.socket = ws; this.opening = null; resolve() }
       ws.onerror = () => { this.opening = null; reject(new Error('WebSocket 连接失败')) }
-      ws.onclose = () => { this.socket = null }
+      ws.onclose = () => {
+        if (this.socket === ws) this.socket = null
+        // 握手阶段就断开(服务重启 / 令牌失配 4401):连接 Promise 必须落地,否则 send 永久挂起
+        if (this.opening) { this.opening = null; reject(new Error('WebSocket 连接已断开')) }
+        this.failAll('连接已断开,请重试')
+      }
       ws.onmessage = (e) => {
         try {
           const ev = JSON.parse(e.data) as WsEvent
@@ -30,12 +35,24 @@ class WsClient {
     return this.opening
   }
 
+  /** 断线时通知所有在途请求(否则 query.done / ai.done 永不到达,前端状态卡死) */
+  private failAll(message: string) {
+    if (!this.handlers.size) return
+    const pending = [...this.handlers.entries()]
+    this.handlers.clear()
+    for (const [id, handler] of pending)
+      handler({ id, event: 'error', data: { message } })
+  }
+
   /** 发送一条请求,事件流通过 onEvent 回推;返回请求 id(用于取消) */
   async send(type: string, payload: any, onEvent: EventHandler): Promise<string> {
     await this.connect()
+    const sock = this.socket
+    if (!sock || sock.readyState !== WebSocket.OPEN)
+      throw new Error('WebSocket 未连接,请重试')
     const id = `r${Date.now()}-${this.seq++}`
     this.handlers.set(id, onEvent)
-    this.socket!.send(JSON.stringify({ id, type, payload }))
+    sock.send(JSON.stringify({ id, type, payload }))
     return id
   }
 

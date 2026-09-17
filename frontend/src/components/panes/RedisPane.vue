@@ -25,13 +25,26 @@ const TYPE_COLOR: Record<string, string> = {
 const keyRows = computed(() =>
   keys.value.filter(k => !keyFilter.value || k.label.includes(keyFilter.value)))
 
-async function loadKeys() {
+const CMD_OUTPUT_CAP = 500   // 命令输出只保留最近若干行
+
+/** 追加命令输出并截断,避免长输出无限占用内存 */
+function pushOutput(...lines: string[]) {
+  cmdOutput.value.push(...lines)
+  if (cmdOutput.value.length > CMD_OUTPUT_CAP)
+    cmdOutput.value = cmdOutput.value.slice(-CMD_OUTPUT_CAP)
+}
+
+/** 加载某一层级的叶子键;prefix 非空时加载该分组(如 user:)下的键 */
+async function loadKeys(prefix = '') {
   status.value = 'SCAN 加载中…'
   try {
     // 树接口按分组返回;这里拉平当前层的叶子键
-    const nodes = await conns.metadata(props.tab.connection_id!, `db${dbIndex.value}`)
+    const path = `db${dbIndex.value}${prefix ? `/${prefix}` : ''}`
+    const nodes = await conns.metadata(props.tab.connection_id!, path)
     keys.value = nodes.filter(n => n.kind === 'key')
-    status.value = `已加载 ${keys.value.length} 键(分组节点请在左树浏览)`
+    status.value = prefix
+      ? `已加载分组 ${prefix} 下 ${keys.value.length} 键`
+      : `已加载 ${keys.value.length} 键(分组节点请在左树浏览)`
   } catch (e: any) {
     status.value = e.message
   }
@@ -50,24 +63,27 @@ async function selectKey(node: MetaNode) {
 async function runCmd() {
   const stmt = cmdInput.value.trim()
   if (!stmt) return
-  cmdOutput.value.push(`> ${stmt}`)
+  pushOutput(`> ${stmt}`)
   try {
     const { results } = await post<{ results: any[] }>('/api/query/execute',
       { conn_id: props.tab.connection_id, stmt })
     const r = results[0]
-    if (r.error) cmdOutput.value.push(`(error) ${r.error}`)
-    else cmdOutput.value.push(...r.rows.map((row: any[]) => String(row[0])))
+    if (r.error) pushOutput(`(error) ${r.error}`)
+    else pushOutput(...(r.rows as any[][]).slice(0, CMD_OUTPUT_CAP).map(row => String(row[0])))
   } catch (e: any) {
-    cmdOutput.value.push(`(error) ${e.message}`)
+    pushOutput(`(error) ${e.message}`)
   }
   cmdInput.value = ''
 }
 
 onMounted(async () => {
   if (props.tab.context?.db) dbIndex.value = parseInt(String(props.tab.context.db).replace('db', '')) || 0
-  await loadKeys()
-  if (props.tab.context?.key) {
-    const hit = keys.value.find(k => (k.extra?.key ?? k.label) === props.tab.context.key)
+  const key = String(props.tab.context?.key ?? '')
+  // 含冒号的键在左树里归属分组节点,顶层 SCAN 找不到:先加载它所在的父分组再选中
+  const group = key.includes(':') ? key.slice(0, key.lastIndexOf(':') + 1) : ''
+  await loadKeys(group)
+  if (key) {
+    const hit = keys.value.find(k => (k.extra?.key ?? k.label) === key)
     if (hit) selectKey(hit)
   }
 })
@@ -77,10 +93,10 @@ onMounted(async () => {
   <section class="pane">
     <div class="pane-toolbar">
       <span class="tn-ico"><AppIcon name="redis" /></span><b style="font-size:12.5px">{{ tab.title }}</b>
-      <select v-model.number="dbIndex" style="height:26px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px" @change="loadKeys">
+      <select v-model.number="dbIndex" style="height:26px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px" @change="loadKeys()">
         <option v-for="i in 16" :key="i - 1" :value="i - 1">db{{ i - 1 }}</option>
       </select>
-      <button class="pt-btn" @click="loadKeys">刷新</button>
+      <button class="pt-btn" @click="loadKeys()">刷新</button>
       <div class="pt-conn" style="font-family:var(--mono)">{{ status }}</div>
     </div>
     <div class="redis-cmd">

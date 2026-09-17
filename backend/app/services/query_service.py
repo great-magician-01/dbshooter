@@ -81,6 +81,7 @@ class QueryService:
                 db.add_history(conn_id, stmt, 0, 0, 'error')
             except asyncio.CancelledError:
                 ctx.status = 'cancelled'
+                db.add_history(conn_id, stmt, 0, 0, 'cancelled')
                 await emit({'event': 'query.error',
                             'data': {'query_id': qid, 'error': '已取消'}})
             except Exception as e:  # 驱动级未预期错误
@@ -96,6 +97,9 @@ class QueryService:
 
     def page(self, query_id: str, offset: int, limit: int) -> dict[str, Any]:
         ctx = self.get(query_id)
+        # 边界防御:负 offset / 非法 limit 不该让切片行为变成"取尾部"
+        offset = max(offset, 0)
+        limit = max(limit, 1)
         first = ctx.first_rows
         if not first:
             return {'columns': [], 'rows': [], 'has_more': False, 'status': ctx.status}
@@ -106,13 +110,14 @@ class QueryService:
 
     async def cancel(self, query_id: str) -> None:
         ctx = self.get(query_id)
+        if ctx.task is None or ctx.task.done():
+            return  # 已结束的查询无需取消,也不应为此断开健康连接
         try:
             driver = await manager.get(ctx.conn_id)
             await driver.cancel()
         except Exception:
             pass  # 取消失败降级:直接杀任务断连
-        if ctx.task and not ctx.task.done():
-            ctx.task.cancel()
+        ctx.task.cancel()
         await manager.evict(ctx.conn_id)
 
 

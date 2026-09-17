@@ -52,6 +52,51 @@ describe('workspace store', () => {
     vi.useRealTimers()
   })
 
+  it('setContent:防抖按页签分桶,A 页签的待发保存不被 B 页签取消', () => {
+    vi.useFakeTimers()
+    const ws = useWorkspaceStore()
+    const a = ws.addTab({ type: 'sql' })
+    const b = ws.addTab({ type: 'sql' })
+    vi.clearAllMocks()
+    ws.setContent(a.id, 'A-1')
+    vi.advanceTimersByTime(300)
+    ws.setContent(b.id, 'B-1')          // 不应把 A 的定时器清掉
+    vi.advanceTimersByTime(500)         // A 的 800ms 到点
+    expect(post).toHaveBeenCalledWith('/api/workspace/tabs/save',
+      expect.objectContaining({ id: a.id, content: 'A-1' }))
+    vi.advanceTimersByTime(300)         // B 的 800ms 到点
+    expect(post).toHaveBeenCalledWith('/api/workspace/tabs/save',
+      expect.objectContaining({ id: b.id, content: 'B-1' }))
+    vi.useRealTimers()
+  })
+
+  it('setContent:定时器到时发送的是最新内容(不是入队时的旧闭包)', () => {
+    vi.useFakeTimers()
+    const ws = useWorkspaceStore()
+    const tab = ws.addTab({ type: 'sql' })
+    vi.clearAllMocks()
+    ws.setContent(tab.id, 'SELECT 1')
+    ws.setContent(tab.id, 'SELECT 2')
+    vi.advanceTimersByTime(900)
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post).toHaveBeenCalledWith('/api/workspace/tabs/save',
+      expect.objectContaining({ content: 'SELECT 2' }))
+    vi.useRealTimers()
+  })
+
+  it('closeTab:取消待发的防抖保存,已删页签不会被复活', () => {
+    vi.useFakeTimers()
+    const ws = useWorkspaceStore()
+    const tab = ws.addTab({ type: 'sql' })
+    vi.clearAllMocks()
+    ws.setContent(tab.id, 'SELECT 1')
+    ws.closeTab(tab.id)
+    vi.advanceTimersByTime(2000)
+    expect(post).toHaveBeenCalledWith('/api/workspace/tabs/delete', { id: tab.id })
+    expect(post).not.toHaveBeenCalledWith('/api/workspace/tabs/save', expect.anything())
+    vi.useRealTimers()
+  })
+
   it('load:恢复页签并聚焦 is_active', async () => {
     vi.mocked(get).mockResolvedValueOnce({ items: [
       { id: 'a', type: 'sql', title: 'SQL-1', connection_id: null, context: {},

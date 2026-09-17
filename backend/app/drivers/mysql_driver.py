@@ -31,13 +31,17 @@ class MysqlDriver(DriverBase):
 
     async def connect(self) -> None:
         if self.pool is None:
-            self.pool = await aiomysql.create_pool(
+            kwargs: dict[str, Any] = dict(
                 host=self.cfg.get('host') or '127.0.0.1',
                 port=int(self.cfg.get('port') or 3306),
                 user=self.cfg.get('username') or 'root',
                 password=self.cfg.get('password') or '',
                 db=self.cfg.get('database') or None,
                 autocommit=True, minsize=1, maxsize=5, connect_timeout=5)
+            if bool(self.cfg.get('readonly')):
+                # 会话级只读:EXPLAIN ANALYZE <DML>(MySQL 8.0.18+ 会真实执行语句)也拦截
+                kwargs['init_command'] = 'SET SESSION TRANSACTION READ ONLY'
+            self.pool = await aiomysql.create_pool(**kwargs)
 
     async def test(self) -> tuple[bool, str]:
         t0 = time.monotonic()
@@ -99,7 +103,10 @@ class MysqlDriver(DriverBase):
         async with self.pool.acquire() as conn, conn.cursor() as cur:
             for t in tables:
                 try:
-                    await cur.execute(f'SHOW CREATE TABLE {t}')
+                    # 标识符反引号翻倍防注入,支持 db.table 两段限定名
+                    ident = '.'.join('`' + seg.replace('`', '``') + '`'
+                                     for seg in t.split('.'))
+                    await cur.execute(f'SHOW CREATE TABLE {ident}')
                     row = await cur.fetchone()
                     if row:
                         out.append(row[1] + ';')

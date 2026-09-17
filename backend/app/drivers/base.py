@@ -49,7 +49,12 @@ class ExecResult:
 
 
 def ensure_writable(stmt: str, readonly: bool) -> None:
-    """只读连接拦截写操作(AI 护栏之外的第二道保险)。"""
+    """只读连接拦截写操作(首词快速拦截,给出友好提示)。
+
+    仅靠首词判断不够:WITH 数据修改 CTE、EXPLAIN ANALYZE <DML>、写型 PRAGMA
+    首词都在 READONLY_PREFIXES 里。真正的硬保证由各驱动在连接层实现
+    (SQLite mode=ro / PG default_transaction_read_only / MySQL 会话只读)。
+    """
     if not readonly:
         return
     first = stmt.lstrip(' \t\r\n(-').split(None, 1)[0].lower() if stmt.strip() else ''

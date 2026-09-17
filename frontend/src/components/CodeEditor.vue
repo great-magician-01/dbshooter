@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { json } from '@codemirror/lang-json'
 import { sql } from '@codemirror/lang-sql'
-import { Compartment, EditorState } from '@codemirror/state'
+import { Compartment, EditorState, Prec } from '@codemirror/state'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { EditorView, keymap } from '@codemirror/view'
 import { basicSetup } from 'codemirror'
@@ -40,7 +40,10 @@ onMounted(() => {
         langExt,
         themeComp.of(buildTheme()),
         EditorView.lineWrapping,
-        keymap.of([{ key: 'Ctrl-Enter', run: () => { emit('execute'); return true } }]),
+        // Prec.highest:basicSetup 自带的 Mod-Enter(插入空行)先注册会先消费按键
+        Prec.highest(keymap.of([
+          { key: 'Mod-Enter', run: () => { emit('execute'); return true } },
+        ])),
         EditorView.updateListener.of(u => {
           if (u.docChanged) emit('update:modelValue', u.state.doc.toString())
         }),
@@ -58,18 +61,6 @@ watch(() => props.modelValue, (v) => {
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: v } })
   }
 })
-
-function insertAtEnd(text: string) {
-  if (!view) return
-  const len = view.state.doc.length
-  const sep = view.state.doc.length ? '\n\n' : ''
-  view.dispatch({ changes: { from: len, insert: sep + text + '\n' } })
-  view.focus()
-}
-
-function focus() { view?.focus() }
-
-defineExpose({ insertAtEnd, focus })
 
 onBeforeUnmount(() => { view?.destroy(); view = null })
 </script>

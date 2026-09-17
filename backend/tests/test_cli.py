@@ -4,10 +4,12 @@ cli fixture 把 cli.state.make_client 替换为指向内存 app 的客户端,命
 """
 from __future__ import annotations
 
+import httpx
 import pytest
 from typer.testing import CliRunner
 
 from backend.cli.client import ApiClient
+from backend.cli.errors import EXIT_UNAUTHORIZED, EXIT_UNREACHABLE, CliError
 from backend.cli.main import app
 
 
@@ -388,3 +390,251 @@ def test_export_has_bom(cli, sqlite_conn_id, tmp_path):
     r = cli.invoke(app, ['export', sqlite_conn_id, 'select * from users', '-o', str(out)])
     assert r.exit_code == 0, r.output
     assert out.read_bytes().startswith(b'\xef\xbb\xbf')
+
+
+# ── 二次审查修复回归 ──
+
+_STUB_CONN = {'id': 'a1b2c3d4-1111-2222-3333-444455556666',
+              'name': 'stub-conn', 'type': 'redis', 'params': {}}
+
+
+def _stub_cli(monkeypatch, handler) -> CliRunner:
+    """把 CLI 指向 httpx.MockTransport 伪服务端:验证传输层错误与结果渲染,不起真实 app。"""
+    import backend.cli.state as cli_state
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(cli_state, 'make_client',
+                        lambda *a, **k: ApiClient(httpx.Client(transport=transport,
+                                                               base_url='http://stub')))
+    return CliRunner()
+
+
+def _add_readonly_sqlite(cli: CliRunner, sqlite_db: str) -> str:
+    """建只读 sqlite 连接(只读拦截在服务端,CLI 只透出错误)。"""
+    import uuid
+    name = f'ro-{uuid.uuid4().hex[:6]}'
+    r = cli.invoke(app, ['conn', 'add', '--name', name, '--type', 'sqlite', '--readonly',
+                         '--param', f'path={sqlite_db}'])
+    assert r.exit_code == 0, r.output
+    return name
+
+
+def test_query_empty_ref_rejected(cli):
+    """空连接引用:startswith('') 恒真,单连接时曾静默落到唯一连接上执行。"""
+    r = cli.invoke(app, ['query', '', 'select 1'])
+    assert r.exit_code == 1
+    assert '请提供连接' in r.output
+    r = cli.invoke(app, ['query', '   ', 'select 1'])
+    assert r.exit_code == 1
+    assert '请提供连接' in r.output
+
+
+def test_query_stdin_bom_not_blocked(cli, sqlite_db):
+    """--stdin 带 UTF-8 BOM:首词不能被 BOM 污染,否则只读连接会误拦成写操作。"""
+    name = _add_readonly_sqlite(cli, sqlite_db)
+    r = cli.invoke(app, ['query', name, '--stdin', '--format', 'raw'], input='\ufeffselect 1')
+    assert r.exit_code == 0, r.output
+    assert r.output.strip() == '1'
+
+
+def test_query_multi_statement_all_results(cli, sqlite_conn_id, tmp_path):
+    """多语句:csv/raw/-o 都要输出全部结果集,不能只取第一条(静默丢数据)。"""
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select 1 as a; select 2 as b',
+                         '--format', 'csv'])
+    assert r.exit_code == 0, r.output
+    assert [ln for ln in r.output.splitlines() if ln] == ['a', '1', 'b', '2']
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select 1 as a; select 2 as b',
+                         '--format', 'raw'])
+    assert r.exit_code == 0, r.output
+    assert [ln for ln in r.output.splitlines() if ln] == ['1', '2']
+    out = tmp_path / 'multi.csv'
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select 1 as a; select 2 as b',
+                         '-o', str(out)])
+    assert r.exit_code == 0, r.output
+    assert [ln for ln in out.read_text(encoding='utf-8-sig').splitlines() if ln] \
+        == ['a', '1', 'b', '2']
+
+
+def test_query_command_result_to_csv(monkeypatch, tmp_path):
+    """redis command 结果 -o 导 csv:kind=command 也是结果集,不再误报"查询无结果集"。"""
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == '/api/connections':
+            return httpx.Response(200, json={'items': [_STUB_CONN]})
+        return httpx.Response(200, json={'results': [
+            {'kind': 'command', 'columns': [{'name': 'GET', 'type': ''}],
+             'rows': [['hello']], 'raw': 'hello', 'elapsed_ms': 1}]})
+
+    cli = _stub_cli(monkeypatch, handler)
+    out = tmp_path / 'r.csv'
+    r = cli.invoke(app, ['query', 'stub-conn', 'GET k', '-o', str(out)])
+    assert r.exit_code == 0, r.output
+    assert [ln for ln in out.read_text(encoding='utf-8-sig').splitlines() if ln] \
+        == ['GET', 'hello']
+
+
+def test_query_documents_without_columns(monkeypatch, tmp_path):
+    """mongo aggregate(columns=[]、数据在 raw):csv 输出 JSONL,table 逐条 JSON。"""
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == '/api/connections':
+            return httpx.Response(200, json={'items': [_STUB_CONN]})
+        return httpx.Response(200, json={'results': [
+            {'kind': 'documents', 'columns': [], 'rows': [],
+             'raw': [{'a': 1}, {'a': 2}], 'elapsed_ms': 3}]})
+
+    cli = _stub_cli(monkeypatch, handler)
+    r = cli.invoke(app, ['query', 'stub-conn', 'db.c.aggregate([])', '--format', 'csv'])
+    assert r.exit_code == 0, r.output
+    assert [ln for ln in r.output.splitlines() if ln] == ['{"a": 1}', '{"a": 2}']
+    r = cli.invoke(app, ['query', 'stub-conn', 'db.c.aggregate([])', '--format', 'raw'])
+    assert r.exit_code == 0, r.output
+    assert [ln for ln in r.output.splitlines() if ln] == ['{"a": 1}', '{"a": 2}']
+    r = cli.invoke(app, ['query', 'stub-conn', 'db.c.aggregate([])', '--format', 'table'])
+    assert r.exit_code == 0, r.output
+    assert '"a": 1' in r.output and '共 2 条' in r.output
+    out = tmp_path / 'docs.csv'
+    r = cli.invoke(app, ['query', 'stub-conn', 'db.c.aggregate([])', '-o', str(out)])
+    assert r.exit_code == 0, r.output
+    assert '{"a": 1}' in out.read_text(encoding='utf-8-sig')
+
+
+def test_non_json_response_exit3(monkeypatch):
+    """200 但响应不是 JSON(指到了别的 web 服务)→ 退出码 3,无裸 traceback。"""
+    cli = _stub_cli(monkeypatch, lambda req: httpx.Response(200, text='<html>not dbs</html>'))
+    r = cli.invoke(app, ['health'])
+    assert r.exit_code == EXIT_UNREACHABLE
+    assert '不是 JSON' in r.output and 'Traceback' not in r.output
+
+
+def test_rest_unauthorized_exit4(cli, monkeypatch):
+    """服务端开启令牌校验且请求不带令牌 → 退出码 4。"""
+    import backend.app.config as app_config
+    monkeypatch.setattr(app_config, 'ACCESS_TOKEN', 'secret-token')
+    r = cli.invoke(app, ['health'])
+    assert r.exit_code == EXIT_UNAUTHORIZED
+    assert '未授权' in r.output and 'Traceback' not in r.output
+
+
+def _invalid_status(code: int):
+    """构造 websockets 的握手被拒异常(服务端在 accept 前返回非 101)。"""
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
+    from websockets.http11 import Response as WsResponse
+    return InvalidStatus(WsResponse(code, 'Nope', Headers(), b''))
+
+
+def test_ws_handshake_error_hides_token(monkeypatch):
+    """握手被拒(非 401/403)时:错误信息不得带 ?token= 明文,退出码为 3。"""
+    import backend.cli.wsclient as wsc
+
+    def boom(*args, **kwargs):
+        raise _invalid_status(404)
+
+    monkeypatch.setattr(wsc, '_ws_connect', boom)
+    with pytest.raises(CliError) as ei:
+        list(wsc.stream_ai_events('ws://h:1/ws?token=SECRET', {}, 1.0))
+    assert ei.value.code == EXIT_UNREACHABLE
+    assert '404' in ei.value.message
+    assert 'SECRET' not in ei.value.message and 'token' not in ei.value.message
+
+
+def test_ws_handshake_403_is_unauthorized(monkeypatch):
+    """握手被拒且状态是 403(服务端令牌校验失败)→ 退出码 4。"""
+    import backend.cli.wsclient as wsc
+
+    def boom(*args, **kwargs):
+        raise _invalid_status(403)
+
+    monkeypatch.setattr(wsc, '_ws_connect', boom)
+    with pytest.raises(CliError) as ei:
+        list(wsc.stream_ai_events('ws://h:1/ws?token=SECRET', {}, 1.0))
+    assert ei.value.code == EXIT_UNAUTHORIZED
+    assert 'SECRET' not in ei.value.message
+
+
+def test_ai_ask_ws_failure_cleans_session(cli, sqlite_conn_id, monkeypatch):
+    """WS 建不起来时,自动新建的会话要补偿删除(不留孤儿会话)。"""
+    import json
+
+    import backend.cli.commands.ai as ai_cmd
+
+    def boom(url, payload, timeout):
+        raise CliError('无法连接或响应超时:确认服务已启动', EXIT_UNREACHABLE)
+        yield   # 生成器占位:异常在首次迭代时抛出,与真实 stream_ai_events 一致
+
+    monkeypatch.setattr(ai_cmd, 'stream_ai_events', boom)
+    r = cli.invoke(app, ['ai', 'ask', sqlite_conn_id, '孤儿会话问题'])
+    assert r.exit_code == EXIT_UNREACHABLE
+    sessions = json.loads(cli.invoke(app, ['ai', 'sessions', 'list', '--format', 'json']).output)
+    assert not any(s['title'].startswith('孤儿会话问题') for s in sessions)
+
+
+def test_ai_providers_add_without_key_non_interactive(cli):
+    """非交互环境不给 --api-key:不能弹提示 Abort,应留空并提示。"""
+    import uuid
+    name = f'nokey-{uuid.uuid4().hex[:6]}'
+    r = cli.invoke(app, ['ai', 'providers', 'add', '--name', name,
+                         '--base-url', 'http://127.0.0.1:9/v1', '--model', 'm'])
+    assert r.exit_code == 0, r.output
+    assert '已创建' in r.output and '跳过 API Key' in r.output
+
+
+def test_conn_add_rejects_unknown_type(monkeypatch):
+    """--type 写错:本地白名单直接报错,压根不发请求(伪服务端一律 500 兜底)。"""
+    cli = _stub_cli(monkeypatch, lambda req: httpx.Response(500, json={'detail': '不该发请求'}))
+    r = cli.invoke(app, ['conn', 'add', '--name', 'x', '--type', 'postgresql'])
+    assert r.exit_code == 1
+    assert '不支持的数据库类型' in r.output and 'postgresql' in r.output
+
+
+def test_limit_local_validation(cli, sqlite_conn_id):
+    """limit 超服务端上限:本地中文报错并提示上限,不等 422。"""
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select 1', '--limit', '6000'])
+    assert r.exit_code == 1
+    assert '1~5000' in r.output
+    r = cli.invoke(app, ['query', sqlite_conn_id, 'select 1', '--limit', '0'])
+    assert r.exit_code == 1
+    assert '1~5000' in r.output
+    r = cli.invoke(app, ['export', sqlite_conn_id, 'select 1', '--limit', '60000'])
+    assert r.exit_code == 1
+    assert '1~50000' in r.output
+
+
+def test_export_from_file_schema_and_stdin(cli, sqlite_conn_id, tmp_path):
+    """export 支持 -f/--stdin 与 --schema 透传(与 query 同一套读数逻辑)。"""
+    f = tmp_path / 'e.sql'
+    f.write_text('select name from users order by id', encoding='utf-8')
+    out = tmp_path / 'from_file.csv'
+    r = cli.invoke(app, ['export', sqlite_conn_id, '-f', str(f), '-o', str(out),
+                         '--schema', 'main'])
+    assert r.exit_code == 0, r.output
+    assert out.read_text(encoding='utf-8-sig').splitlines() == ['name', '张三', '李四', '王五']
+    out2 = tmp_path / 'from_stdin.csv'
+    r = cli.invoke(app, ['export', sqlite_conn_id, '--stdin', '-o', str(out2)],
+                   input='select city from users where id=1')
+    assert r.exit_code == 0, r.output
+    assert out2.read_text(encoding='utf-8-sig').splitlines() == ['city', '上海']
+
+
+def test_table_cell_markup_rendered_literally(capsys):
+    """数据里的 rich markup 必须原样显示(单元格用 Text 包裹),不能被吞字/建超链接。"""
+    from rich.console import Console
+
+    from backend.cli.output import print_results
+    results = [{'kind': 'rows', 'columns': [{'name': 'v', 'type': ''}],
+                'rows': [['[b]hi[/b]'], ['[link=http://evil]点我[/link]']]}]
+    print_results(results, 'table', Console(no_color=True, highlight=False))
+    out = capsys.readouterr().out
+    assert '[b]hi[/b]' in out and '[link=http://evil]点我[/link]' in out
+
+
+def test_error_and_cells_escape_control_chars(capsys):
+    """库数据里的 ESC 等控制字符转义显示,不能改终端状态。"""
+    from rich.console import Console
+
+    from backend.cli.output import print_results
+    results = [{'kind': 'rows', 'columns': [{'name': 'v', 'type': ''}],
+                'rows': [['\x1b[31mred\x1b[0m', 'ok']]},
+               {'kind': 'rows', 'error': '\x1b]0;标题\x07'}]
+    print_results(results, 'table', Console(no_color=True, highlight=False))
+    out = capsys.readouterr().out
+    assert '\x1b' not in out and '\x07' not in out
+    assert '\\x1b[31mred' in out and '\\x07' in out

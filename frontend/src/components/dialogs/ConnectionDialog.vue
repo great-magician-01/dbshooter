@@ -22,7 +22,7 @@ const BADGE: Record<string, [string, string]> = {
 const form = reactive({
   id: null as string | null,
   type: 'mysql' as string,
-  name: '', host: '127.0.0.1', port: 3306, database: '', username: 'root',
+  name: '', host: '127.0.0.1', port: 3306 as number | '', database: '', username: 'root',
   password: '', path: '', uri: '', db: 0, readonly: false,
 })
 const testing = ref(false)
@@ -69,7 +69,9 @@ function buildPayload() {
   if (form.type === 'mongo' && form.uri) params.uri = form.uri
   return {
     id: form.id, name: form.name || `${form.type}-${form.host || form.path}`,
-    type: form.type, host: form.host, port: form.port, database: form.database,
+    type: form.type, host: form.host, database: form.database,
+    // 端口输入框清空时 v-model.number 得到空串,直接提交会被后端 422 拒掉
+    port: form.port === '' ? null : form.port,
     username: form.username, password: form.password, params, readonly: form.readonly,
   }
 }

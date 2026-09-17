@@ -64,6 +64,25 @@ async def test_readonly(sqlite_db):
     await d.close()
 
 
+async def test_readonly_blocks_pragma_writes(sqlite_db):
+    """首词拦截之外的写型 PRAGMA:mode=ro 在内核层兜底,user_version 不得被改。"""
+    import sqlite3
+    d = make(sqlite_db, readonly=True)
+    res = await d.execute('PRAGMA user_version = 42')
+    assert res[0].kind == 'error' and res[0].error is not None and 'readonly' in res[0].error
+    await d.close()
+    with sqlite3.connect(sqlite_db) as c:
+        assert c.execute('PRAGMA user_version').fetchone()[0] == 0
+
+
+async def test_metadata_quoted_table_name(sqlite_db):
+    """PRAGMA 不支持参数绑定,表名含引号时靠标识符翻倍,不应抛语法错误。"""
+    d = make(sqlite_db)
+    cols = await d.metadata('main.x") FROM t--')
+    assert cols == []   # 只是"没有这个表",不再是 OperationalError
+    await d.close()
+
+
 async def test_ddl(sqlite_db):
     d = make(sqlite_db)
     ddl = await d.ddl(['users'])

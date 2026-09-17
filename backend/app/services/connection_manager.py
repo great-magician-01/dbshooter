@@ -37,10 +37,13 @@ class ConnectionManager:
             await driver.close()
 
     async def evict(self, conn_id: str) -> None:
-        driver = self._drivers.pop(conn_id, None)
+        # 与 get() 持同一把锁再摘除:避免 get 正在 connect 时被并发 evict
+        # 拆走连接(旧实现还会顺手 pop 掉锁本身,制造新竞态窗口)
+        lock = self._locks.setdefault(conn_id, asyncio.Lock())
+        async with lock:
+            driver = self._drivers.pop(conn_id, None)
         if driver:
             await driver.close()
-        self._locks.pop(conn_id, None)
 
     async def close_all(self) -> None:
         for driver in self._drivers.values():
@@ -49,6 +52,7 @@ class ConnectionManager:
             except Exception:
                 pass
         self._drivers.clear()
+        self._locks.clear()
 
 
 manager = ConnectionManager()

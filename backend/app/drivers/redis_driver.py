@@ -12,6 +12,10 @@ from .base import DriverBase, ExecResult, MetaNode, QueryError, register
 SCAN_COUNT = 500          # 每次 SCAN 批量
 MAX_GROUP_KEYS = 200      # 单个分组节点下直接展示的 key 上限
 
+# 会无限期挂起连接的命令:查询在无读超时的 WS 会话里执行,一旦阻塞整个连接不可用
+_BLOCKING_CMDS = {'BLPOP', 'BRPOP', 'BRPOPLPUSH', 'BLMOVE', 'BZPOPMIN', 'BZPOPMAX',
+                  'SUBSCRIBE', 'PSUBSCRIBE', 'SSUBSCRIBE', 'MONITOR', 'WAIT'}
+
 
 def format_command_result(value, indent: int = 0) -> list[str]:
     """redis 命令回包 → 可读文本行(纯函数,便于测试)。"""
@@ -115,8 +119,14 @@ class RedisDriver(DriverBase):
         base = f'db{db}/{prefix}'
         nodes = [MetaNode(path=f'{base}{g}', label=f'{g} ({n})', kind='keygroup',
                           has_children=True) for g, n in sorted(groups.items())]
+        shown = sorted(keys)[:MAX_GROUP_KEYS]
         nodes += [MetaNode(path=f'{base}~{k}', label=k[len(prefix):], kind='key',
-                           extra={'key': k}) for k in sorted(keys)[:MAX_GROUP_KEYS]]
+                           extra={'key': k}) for k in shown]
+        if len(keys) > MAX_GROUP_KEYS:
+            # 截断要有迹可循,不能让用户误以为只有这些键(has_children=False 的
+            # 分组节点不可展开,仅作提示)
+            nodes.append(MetaNode(path=f'{base}~', kind='keygroup', has_children=False,
+                                  label=f'…另有 {len(keys) - len(shown)} 个键未列出'))
         return nodes
 
     async def key_detail(self, db: int, key: str) -> dict[str, Any]:
@@ -159,6 +169,9 @@ class RedisDriver(DriverBase):
         cmd = args[0].upper()
         if cmd == 'KEYS':
             raise QueryError('生产安全:禁用 KEYS *,请改用左侧键浏览器(SCAN)或 SCAN 命令')
+        if cmd in _BLOCKING_CMDS:
+            raise QueryError(f'已拦截阻塞命令 {cmd}:它会挂起整个查询会话,'
+                             '请改用非阻塞变体(如 LPOP / ZPOPMIN)')
         if self.cfg.get('readonly') and cmd not in (
                 'GET', 'MGET', 'HGET', 'HGETALL', 'HMGET', 'LRANGE', 'SMEMBERS', 'ZRANGE',
                 'ZRANGEBYSCORE', 'TYPE', 'PTTL', 'TTL', 'EXISTS', 'STRLEN', 'HLEN', 'LLEN',

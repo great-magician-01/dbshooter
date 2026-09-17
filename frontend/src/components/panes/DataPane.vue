@@ -41,10 +41,13 @@ async function exportCsv() {
   try {
     const resp = await http.post('/api/query/export',
       { conn_id: props.tab.connection_id, stmt: stmt() }, { responseType: 'blob' })
-    const url = URL.createObjectURL(resp.data)
+    // 后端流是纯 UTF-8 无 BOM,补上 BOM 让 Excel 正确识别中文(\ufeff)
+    const blob = new Blob(['\ufeff', resp.data], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url; a.download = `${table}.csv`; a.click()
-    URL.revokeObjectURL(url)
+    // 立即 revoke 会让 Firefox 中断尚在进行的下载
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
   } catch (e: any) {
     error.value = e.message
   }

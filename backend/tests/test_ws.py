@@ -75,6 +75,35 @@ def test_ws_unknown_type(client):
     assert msg['event'] == 'error'
 
 
+def test_ws_malformed_query_payload(client):
+    """缺 conn_id/stmt 必须回错误事件,而不是让请求悬死。"""
+    with client.websocket_connect('/ws') as ws:
+        ws.send_json({'id': 'q1', 'type': 'query.execute', 'payload': {}})
+        events = _collect(ws, {'query.done', 'query.error'})
+    assert events[-1]['event'] == 'query.error'
+    assert 'conn_id' in events[-1]['data']['error']
+
+
+def test_ws_non_dict_payload(client):
+    with client.websocket_connect('/ws') as ws:
+        ws.send_json({'id': 'q2', 'type': 'query.execute', 'payload': 'not-a-dict'})
+        msg = ws.receive_json()
+    assert msg['event'] == 'error' and 'payload' in msg['data']['message']
+
+
+def test_ws_ai_bogus_session(client):
+    """不存在的 session_id 应得到可读错误,而不是 FK 违例异常悬死。"""
+    p = client.post('/api/ai/providers', json={
+        'name': 'mock', 'base_url': 'http://mock/v1', 'model': 'm'}).json()['item']
+    client.post('/api/ai/providers/activate', json={'id': p['id']})
+    with client.websocket_connect('/ws') as ws:
+        ws.send_json({'id': 'a9', 'type': 'ai.text2sql',
+                      'payload': {'session_id': 'no-such-session', 'question': 'hi'}})
+        events = _collect(ws, {'ai.done', 'ai.error'})
+    assert events[-1]['event'] == 'ai.error'
+    assert '会话不存在' in events[-1]['data']['message']
+
+
 def test_ws_ai_text2sql(client, monkeypatch):
     # 准备 provider + 会话
     p = client.post('/api/ai/providers', json={

@@ -57,3 +57,13 @@ def test_format_list_and_dict():
 def test_format_nested():
     lines = format_command_result([['x', 1]])
     assert lines == ['1)', '  1) x', '  2) 1']
+
+
+async def test_redis_blocking_commands_rejected():
+    """阻塞命令会挂起无读超时的查询会话,必须在发起 I/O 前拦截。"""
+    from backend.app.drivers.redis_driver import RedisDriver
+    d = RedisDriver({'type': 'redis'})
+    with pytest.raises(QueryError, match='BLPOP'):
+        await d.execute('BLPOP mykey 0')
+    with pytest.raises(QueryError, match='SUBSCRIBE'):
+        await d.execute('subscribe ch')

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import io
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -63,7 +64,7 @@ async def export_csv(body: ExportIn):
     """执行查询并以 CSV 流式返回(M4)。"""
     try:
         driver = await manager.get(body.conn_id)
-        results = await driver.execute(body.stmt, limit=body.limit)
+        results = await driver.execute(body.stmt, limit=body.limit, schema=body.schema_)
     except QueryError as e:
         raise HTTPException(400, str(e))
     first = next((r for r in results if r.kind in ('rows', 'documents') and not r.error), None)
@@ -71,16 +72,22 @@ async def export_csv(body: ExportIn):
         err = next((r.error for r in results if r.error), '查询无结果集')
         raise HTTPException(400, err)
 
+    def _csv_safe(v: Any) -> Any:
+        """公式注入防护:Excel 会把 =/+/-/@ 开头的单元格当公式执行。"""
+        if isinstance(v, str) and v[:1] in ('=', '+', '-', '@'):
+            return "'" + v
+        return v
+
     def gen():
         buf = io.StringIO()
         w = csv.writer(buf)
         w.writerow([c['name'] for c in first.columns])
         yield buf.getvalue(); buf.seek(0); buf.truncate()
         for row in first.rows:
-            w.writerow(['' if v is None else v for v in row])
+            w.writerow(['' if v is None else _csv_safe(v) for v in row])
             yield buf.getvalue(); buf.seek(0); buf.truncate()
 
-    return StreamingResponse(gen(), media_type='text/csv', headers={
+    # 流本身是纯 UTF-8 无 BOM(BOM 由各端落盘时自行添加,CLI 已如此,Web 端 blob 前补)
+    return StreamingResponse(gen(), media_type='text/csv; charset=utf-8', headers={
         'Content-Disposition': 'attachment; filename="export.csv"',
-        'Content-Type': 'text/csv; charset=utf-8-sig',
     })

@@ -11,6 +11,8 @@ export const useUiStore = defineStore('ui', () => {
   const executeNonce = ref(0)
   /** AI"插入并执行":目标 Tab 挂载后自动执行一次 */
   const pendingRunTabId = ref<string | null>(null)
+  /** 左树当前选中的节点(`${connId}|${path}`):全局唯一,保证高亮互斥 */
+  const selectedTreeNode = ref<string | null>(null)
 
   function openConnDialog(id: string | null = null) {
     editingConnection.value = id
@@ -20,5 +22,5 @@ export const useUiStore = defineStore('ui', () => {
   function triggerExecute() { executeNonce.value++ }
 
   return { connDialogVisible, editingConnection, settingsVisible, aiVisible,
-           executeNonce, pendingRunTabId, openConnDialog, triggerExecute }
+           executeNonce, pendingRunTabId, selectedTreeNode, openConnDialog, triggerExecute }
 })

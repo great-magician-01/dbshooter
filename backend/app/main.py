@@ -1,23 +1,35 @@
 """应用装配:REST 路由 + WS + 静态前端托管 + 可选令牌鉴权。"""
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db
+from . import config, db, security
 from .api import ai, connections, query, settings, workspace
 from .api.ws import websocket_endpoint
 from .services.connection_manager import manager
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    db.conn()  # 建库建表
+    yield
+    await manager.close_all()
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title='DBShooter', docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title='DBShooter', docs_url=None, redoc_url=None, openapi_url=None,
+                  lifespan=_lifespan)
 
     @app.middleware('http')
     async def token_auth(request: Request, call_next):
         if config.ACCESS_TOKEN and request.url.path.startswith('/api'):
-            if request.headers.get('authorization') != f'Bearer {config.ACCESS_TOKEN}':
+            auth = request.headers.get('authorization') or ''
+            provided = auth[7:] if auth.startswith('Bearer ') else ''
+            if not security.token_matches(provided):
                 return JSONResponse({'detail': '未授权'}, status_code=401)
         return await call_next(request)
 
@@ -25,14 +37,6 @@ def create_app() -> FastAPI:
         app.include_router(r)
 
     app.websocket('/ws')(websocket_endpoint)
-
-    @app.on_event('startup')
-    def _startup():
-        db.conn()  # 建库建表
-
-    @app.on_event('shutdown')
-    async def _shutdown():
-        await manager.close_all()
 
     # 前端静态托管(SPA fallback)
     if config.FRONTEND_DIST:

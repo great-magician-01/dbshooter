@@ -1,17 +1,31 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 
 import { post } from '@/api/http'
 import AppIcon from '@/components/AppIcon.vue'
 import CodeEditor from '@/components/CodeEditor.vue'
+import { useWorkspaceStore } from '@/stores/workspace'
 import type { Tab } from '@/types'
 
 const props = defineProps<{ tab: Tab }>()
 
-const query = ref(props.tab.content || 'db.test.find({}).limit(50)')
+const workspace = useWorkspaceStore()
 const docs = ref<any[]>([])
 const status = ref('就绪 · Ctrl+Enter 执行')
 const running = ref(false)
+
+// 内容存 workspace 的页签里(与 SqlPane 一致):切换页签/重启后不丢
+onMounted(() => {
+  if (!props.tab.content)
+    workspace.setContent(props.tab.id,
+      props.tab.context?.collection
+        ? `db.${props.tab.context.collection}.find({}).sort({ _id: -1 }).limit(50)`
+        : 'db.test.find({}).limit(50)')
+})
+
+function onEdit(v: string) {
+  workspace.setContent(props.tab.id, v)
+}
 
 async function run() {
   if (running.value) return
@@ -19,7 +33,7 @@ async function run() {
   status.value = '查询中…'
   try {
     const { results } = await post<{ results: any[] }>('/api/query/execute',
-      { conn_id: props.tab.connection_id, stmt: query.value, limit: 200 })
+      { conn_id: props.tab.connection_id, stmt: props.tab.content, limit: 200 })
     const r = results[0]
     if (r.error) { status.value = `错误:${r.error}`; docs.value = [] }
     else if (r.kind === 'documents') {
@@ -49,7 +63,7 @@ async function run() {
       </div>
     </div>
     <div class="mongo-editor">
-      <CodeEditor lang="json" :model-value="query" @update:model-value="query = $event" @execute="run" />
+      <CodeEditor lang="json" :model-value="tab.content" @update:model-value="onEdit" @execute="run" />
     </div>
     <div class="result-tabs">
       <span class="rt-tab active">文档 <span class="rt-badge">{{ docs.length }}</span></span>

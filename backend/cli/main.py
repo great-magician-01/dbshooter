@@ -37,7 +37,11 @@ def _global(ctx: typer.Context,
 def _fix_stdio() -> None:
     """Windows 管道/重定向场景统一 UTF-8:否则中文按 cp936 编解码,
     重定向含非 GBK 字符会直接 UnicodeEncodeError;stdout newline='' 防 csv 双 CR。
-    仅 TextIOWrapper 有 reconfigure,CliRunner 等替换流 isinstance 自然跳过。"""
+
+    只有 TextIOWrapper 支持 reconfigure,所以按 isinstance 判断。注意:测试用的
+    click CliRunner 流(_NamedTextIOWrapper)正是其子类,跑测试时这里会被真的执行
+    (errors='replace' 会把编码错误吞成替换字符)——即编码类问题在测试里不暴露,
+    别拿测试通过代替 Windows 真实控制台的验证。"""
     try:
         if isinstance(sys.stdout, io.TextIOWrapper):
             sys.stdout.reconfigure(encoding='utf-8', errors='replace', newline='')

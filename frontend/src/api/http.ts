@@ -11,8 +11,13 @@ http.interceptors.request.use((cfg) => {
 
 http.interceptors.response.use(
   (resp) => resp,
-  (err: AxiosError<any>) => {
-    const detail = err.response?.data?.detail
+  async (err: AxiosError<any>) => {
+    let detail = err.response?.data?.detail
+    const data = err.response?.data
+    // responseType: 'blob' 的请求出错时响应体是 Blob,detail 藏在里面
+    if (typeof Blob !== 'undefined' && data instanceof Blob) {
+      try { detail = JSON.parse(await data.text())?.detail } catch { /* 非 JSON 错误体 */ }
+    }
     const msg = typeof detail === 'string' ? detail : err.message
     return Promise.reject(new Error(msg || '请求失败'))
   },

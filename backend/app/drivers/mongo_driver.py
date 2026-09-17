@@ -198,10 +198,17 @@ class MongoDriver(DriverBase):
                                    columns=[{'name': 'count', 'type': 'int'}], rows=[[n]],
                                    elapsed_ms=int((time.monotonic() - t0) * 1000))]
             if method == 'aggregate':
-                docs = [doc_to_jsonable(d) async for d in coll.aggregate(args[0] if args else [])]
+                raw_pipeline = args[0] if args else []
+                if not isinstance(raw_pipeline, list):
+                    raise QueryError('aggregate 第一个参数必须是管道数组 [{...}, ...]')
+                pipeline = list(raw_pipeline)
+                # 管道尾追加 $limit,服务端限量,避免大结果集全量拉进内存
+                pipeline.append({'$limit': limit + 1})
+                docs = [doc_to_jsonable(d) async for d in coll.aggregate(pipeline)]
+                truncated = len(docs) > limit
                 return [ExecResult(kind='documents', raw=docs[:limit],
                                    columns=[], rows=[],
-                                   truncated=len(docs) > limit,
+                                   truncated=truncated,
                                    elapsed_ms=int((time.monotonic() - t0) * 1000))]
             # 写操作
             fn = getattr(coll, method)
@@ -220,5 +227,5 @@ class MongoDriver(DriverBase):
 
 def _cell(v: Any) -> Any:
     if isinstance(v, (dict, list)):
-        return json_util.dumps(v, ensure_ascii=False) if not isinstance(v, (str,)) else v
+        return json_util.dumps(v, ensure_ascii=False)
     return v

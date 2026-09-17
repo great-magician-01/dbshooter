@@ -9,6 +9,8 @@ export const useConnectionsStore = defineStore('connections', () => {
   const items = ref<Connection[]>([])
   /** `${connId}|${path}` → 已加载的子节点 */
   const metaCache = ref<Map<string, MetaNode[]>>(new Map())
+  /** `${connId}|${path}` → 在途请求(同一 path 未返回时不重复发) */
+  const metaPending = new Map<string, Promise<MetaNode[]>>()
 
   async function load() {
     items.value = (await get<{ items: Connection[] }>('/api/connections')).items
@@ -17,7 +19,7 @@ export const useConnectionsStore = defineStore('connections', () => {
   async function save(cfg: ConnectionSave): Promise<Connection> {
     const url = cfg.id ? '/api/connections/update' : '/api/connections'
     const { item } = await post<{ item: Connection }>(url, cfg)
-    metaCache.value.delete(`${item.id}|`)   // 配置变了,缓存作废
+    // 配置变了,该连接的全部元数据缓存作废
     for (const key of [...metaCache.value.keys()])
       if (key.startsWith(`${item.id}|`)) metaCache.value.delete(key)
     await load()
@@ -33,21 +35,19 @@ export const useConnectionsStore = defineStore('connections', () => {
     return post<{ ok: boolean; message: string }>('/api/connections/test', payload)
   }
 
-  /** 元数据懒加载:同一 (connId, path) 只请求一次 */
-  async function metadata(connId: string, path: string): Promise<MetaNode[]> {
+  /** 元数据懒加载:同一 (connId, path) 只请求一次(含并发去重) */
+  function metadata(connId: string, path: string): Promise<MetaNode[]> {
     const key = `${connId}|${path}`
     const hit = metaCache.value.get(key)
-    if (hit) return hit
-    const { items: nodes } = await get<{ items: MetaNode[] }>(
-      `/api/connections/${connId}/metadata`, { path })
-    metaCache.value.set(key, nodes)
-    return nodes
+    if (hit) return Promise.resolve(hit)
+    const inflight = metaPending.get(key)
+    if (inflight) return inflight
+    const p = get<{ items: MetaNode[] }>(`/api/connections/${connId}/metadata`, { path })
+      .then(({ items: nodes }) => { metaCache.value.set(key, nodes); return nodes })
+      .finally(() => { metaPending.delete(key) })
+    metaPending.set(key, p)
+    return p
   }
 
-  function invalidateMeta(connId: string) {
-    for (const key of [...metaCache.value.keys()])
-      if (key.startsWith(`${connId}|`)) metaCache.value.delete(key)
-  }
-
-  return { items, load, save, remove, test, metadata, invalidateMeta }
+  return { items, load, save, remove, test, metadata }
 })

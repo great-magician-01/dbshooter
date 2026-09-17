@@ -8,6 +8,9 @@ import tempfile
 _TMP = tempfile.mkdtemp(prefix='dbshooter-test-')
 os.environ['DBSHOOTER_DATA_DIR'] = _TMP
 os.environ['DBSHOOTER_SECRET'] = 'test-secret-key'
+# 隔离外部环境:config.ACCESS_TOKEN 在 import 时读环境变量,
+# 带 DBSHOOTER_TOKEN 的 shell 里跑测试会全线 401
+os.environ.pop('DBSHOOTER_TOKEN', None)
 
 import pytest  # noqa: E402
 

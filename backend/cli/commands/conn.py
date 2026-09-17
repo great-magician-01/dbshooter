@@ -14,8 +14,16 @@ from ..state import get_state
 
 app = typer.Typer(help='连接管理', no_args_is_help=True)
 
-_TYPE_HELP = 'sqlite | mysql | pg | redis | mongo'
+_TYPES = ('sqlite', 'mysql', 'pg', 'redis', 'mongo')
+_TYPE_HELP = ' | '.join(_TYPES)
 _FMT_OPT = typer.Option(None, '--format', help=f'输出格式: {"/".join(FMT_CHOICES)}')
+
+
+def _check_type(type_: str) -> str:
+    """本地白名单校验:类型写错立刻报错,不必等到连库时才失败。"""
+    if type_ not in _TYPES:
+        raise CliError(f'不支持的数据库类型: {type_}(可选 {_TYPE_HELP})')
+    return type_
 
 
 def _parse_params(pairs: list[str] | None) -> dict[str, Any]:
@@ -80,6 +88,7 @@ def add(ctx: typer.Context,
         param: list[str] | None = typer.Option(None, '--param', help='k=v,可重复;sqlite 用 path=...'),
         readonly: bool = typer.Option(False, '--readonly', help='只读模式')) -> None:
     """新增连接。例:dbs conn add --name 本地 --type sqlite --param path=/tmp/a.db"""
+    _check_type(type_)
     if password is None:
         password = _ask_password(type_)
     body = {'name': name, 'type': type_, 'host': host, 'port': port,
@@ -151,6 +160,7 @@ def test(ctx: typer.Context,
     if ref is not None and type_ is None:
         body: dict[str, Any] = {'id': resolve_conn(client, ref)['id']}
     elif type_ is not None:
+        _check_type(type_)
         if password is None:
             password = _ask_password(type_)
         body = {'config': {'name': 'cli-test', 'type': type_, 'host': host, 'port': port,

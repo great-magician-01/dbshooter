@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import os
 
 from cryptography.fernet import Fernet
@@ -15,6 +16,12 @@ from cryptography.fernet import Fernet
 from . import config
 
 _fernet: Fernet | None = None
+
+
+def token_matches(provided: str | None) -> bool:
+    """访问令牌校验(恒时比较,防时序侧信道)。未启用令牌时恒 False。"""
+    tok = config.ACCESS_TOKEN
+    return tok is not None and provided is not None and hmac.compare_digest(provided, tok)
 
 
 def _load_key() -> bytes:

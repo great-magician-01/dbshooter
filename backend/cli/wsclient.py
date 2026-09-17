@@ -50,7 +50,8 @@ def stream_ai_events(url: str, payload: dict[str, Any],
         if status in (401, 403):
             raise CliError('未授权:请用 --token 或 DBSHOOTER_TOKEN 提供访问令牌',
                            EXIT_UNAUTHORIZED) from e
-        raise CliError(f'WS 握手失败({status}): {url}') from e
+        # 去掉查询串:url 里的 ?token=<明文> 不能进终端/CI 日志
+        raise CliError(f'WS 握手失败({status}): {url.split("?")[0]}', EXIT_UNREACHABLE) from e
     except WebSocketException as e:
         # 连接中途断开 / 单帧超限等(非 OSError 族,需单独收)
         raise CliError(f'WS 连接中断: {e}', EXIT_UNREACHABLE) from e

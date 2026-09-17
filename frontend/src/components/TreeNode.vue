@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import AppIcon from '@/components/AppIcon.vue'
 import { useConnectionsStore } from '@/stores/connections'
+import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
 import type { Connection, MetaNode } from '@/types'
 import { showContextMenu, type MenuItem } from '@/utils/contextMenu'
@@ -16,12 +17,15 @@ const props = defineProps<{
 
 const conns = useConnectionsStore()
 const workspace = useWorkspaceStore()
+const ui = useUiStore()
 
 const isVirtual = computed(() => props.node.label === '')
 const open = ref(isVirtual.value || props.depth === 0)
 const loading = ref(false)
 const children = ref<MetaNode[] | null>(null)
-const sel = ref(false)
+/** 选中态存全局(带连接前缀防重名),保证同一时刻只有一个节点高亮 */
+const nodeKey = computed(() => `${props.conn.id}|${props.node.path}`)
+const sel = computed(() => ui.selectedTreeNode === nodeKey.value)
 
 const ico = computed(() => {
   switch (props.node.kind) {
@@ -49,7 +53,7 @@ async function loadChildren() {
 }
 
 async function toggle() {
-  sel.value = true
+  ui.selectedTreeNode = nodeKey.value
   if (!props.node.has_children) return
   open.value = !open.value
   if (open.value && children.value === null) await loadChildren()

@@ -104,6 +104,23 @@ export interface AiMessage {
   elapsed_ms?: number | null
 }
 
+/** 单条语句的执行汇总(query.done 的 summary 元素) */
+export interface QuerySummary {
+  kind: 'rows' | 'affected' | 'command' | 'documents' | string
+  affected: number | null
+  error: string | null
+}
+
+/** query.done 事件数据(见 backend/app/services/query_service.py) */
+export interface QueryDone {
+  query_id: string
+  row_count: number
+  elapsed_ms: number
+  truncated?: boolean
+  summary?: QuerySummary[]
+  error?: string | null
+}
+
 export interface WsEvent {
   id: string
   event: string

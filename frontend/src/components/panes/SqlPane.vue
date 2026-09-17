@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 import { get, post } from '@/api/http'
 import { ws } from '@/api/ws'
@@ -10,7 +10,7 @@ import ResultGrid from '@/components/ResultGrid.vue'
 import { useConnectionsStore } from '@/stores/connections'
 import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
-import type { Column, Tab } from '@/types'
+import type { Column, QueryDone, Tab } from '@/types'
 import { formatMs, formatSql } from '@/utils/format'
 import { useSplitter } from '@/utils/split'
 
@@ -20,7 +20,6 @@ const conns = useConnectionsStore()
 const workspace = useWorkspaceStore()
 const ui = useUiStore()
 
-const editorRef = ref<InstanceType<typeof CodeEditor>>()
 const running = ref(false)
 const columns = ref<Column[]>([])
 const rows = ref<any[][]>([])
@@ -43,11 +42,21 @@ const { size: resultsHeight, onPointerDown: resultsSplit } = useSplitter(280, {
 
 const sqlConns = computed(() => conns.items.filter(c => ['sqlite', 'mysql', 'pg'].includes(c.type)))
 
+/** query.started / query.rows / query.done / query.error(含服务端兜底 error)的事件数据合集 */
+type QueryEventData = Partial<QueryDone> & {
+  columns?: Column[]
+  rows?: any[][]
+  has_more?: boolean
+  error?: string
+  message?: string
+}
+
 /** 页签绑定的 schema(右键 PG schema/表 新建的标签页):查询免写 schema 前缀 */
 const schema = computed(() => (props.tab.context?.schema as string | undefined) ?? null)
 
 const connId = computed({
-  get: () => props.tab.connection_id ?? sqlConns.value[0]?.id ?? '',
+  // 不回退到第一个连接:绑定的连接被删后宁可不执行,也不要跑到别的库上
+  get: () => props.tab.connection_id ?? '',
   set: (v: string) => {
     // 换连接后原 schema 绑定对新连接无意义,解绑
     if (props.tab.connection_id !== v && props.tab.context?.schema)
@@ -79,28 +88,43 @@ function pushLog(line: string, cls = '') {
 async function run() {
   const stmt = props.tab.content.trim()
   if (!stmt || running.value) return
-  if (!connId.value) { statusText.value = '请先选择连接'; return }
+  if (!connId.value) { statusText.value = '请先选择连接'; pushLog('请先选择连接', 'err'); return }
   running.value = true
   statusText.value = '执行中…'
+  // 清空上一次查询的状态:非行结果集(UPDATE/INSERT/DDL)不会再有 query.rows 事件
+  queryId.value = null
+  columns.value = []
+  rows.value = []
+  hasMore.value = false
+  loadingMore.value = false
   pushLog(escapeHtml(stmt.split('\n').find(l => l.trim()) ?? stmt))
   await ws.send('query.execute',
     { conn_id: connId.value, stmt, schema: schema.value ?? undefined }, (ev) => {
-    const d = ev.data ?? {}
+    const d = (ev.data ?? {}) as QueryEventData
     if (ev.event === 'query.started') {
-      queryId.value = d.query_id
+      queryId.value = d.query_id ?? null
     } else if (ev.event === 'query.rows') {
-      columns.value = d.columns; rows.value = d.rows; hasMore.value = d.has_more
+      columns.value = d.columns ?? []; rows.value = d.rows ?? []; hasMore.value = d.has_more ?? false
       view.value = 'grid'
     } else if (ev.event === 'query.done') {
       const rc = d.row_count ?? 0
-      statusText.value = `${rc} 行 · ${formatMs(d.elapsed_ms)}${d.truncated ? ' · 已截断' : ''}`
-      workspace.lastRun = { rows: rc, ms: d.elapsed_ms }
-      pushLog(`${iconSvg('check')} ${rc} 行,${formatMs(d.elapsed_ms)}`, 'ok')
+      const ms = formatMs(d.elapsed_ms)
+      // 纯写语句后端不发 query.rows,受影响行数只能从 summary 里汇总
+      const kinds = (d.summary ?? []).map(s => s.kind)
+      const affected = (d.summary ?? []).reduce((n, s) => n + (s.affected ?? 0), 0)
+      const label = kinds.includes('rows') || kinds.includes('documents')
+        ? `${rc} 行`
+        : kinds.includes('affected') ? `${affected} 行受影响` : `${rc} 行`
+      statusText.value = `${label} · ${ms}${d.truncated ? ' · 已截断' : ''}`
+      workspace.lastRun = { rows: rc, ms: d.elapsed_ms ?? 0 }
+      pushLog(`${iconSvg('check')} ${label},${ms}`, 'ok')
       running.value = false
       ws.done(ev.id)
-    } else if (ev.event === 'query.error') {
-      statusText.value = `错误:${d.error ?? '执行失败'}`
-      pushLog(`${iconSvg('close')} ${d.error ?? '执行失败'}`, 'err')
+    } else if (ev.event === 'query.error' || ev.event === 'error') {
+      // error:连接断开等服务端兜底事件,与 query.error 同样收尾
+      const msg = d.error ?? d.message ?? '执行失败'
+      statusText.value = `错误:${msg}`
+      pushLog(`${iconSvg('close')} ${escapeHtml(msg)}`, 'err')
       running.value = false
       ws.done(ev.id)
     }
@@ -109,13 +133,15 @@ async function run() {
 
 async function showPlan() {
   const stmt = props.tab.content.trim()
-  if (!stmt || !connId.value) return
+  if (!stmt) return
   view.value = 'plan'
+  if (!connId.value) { planText.value = '请先选择连接'; return }
   planText.value = '加载中…'
   try {
     const first = stmt.split(';').map(s => s.trim()).filter(Boolean)[0]
-    const dialect = conns.items.find(c => c.id === connId.value)?.type === 'mysql'
-      ? `EXPLAIN ${first}` : `EXPLAIN QUERY PLAN ${first}`
+    // EXPLAIN QUERY PLAN 是 SQLite 专有语法,MySQL / PG 都用 EXPLAIN
+    const dialect = conns.items.find(c => c.id === connId.value)?.type === 'sqlite'
+      ? `EXPLAIN QUERY PLAN ${first}` : `EXPLAIN ${first}`
     const { results } = await post<{ results: any[] }>('/api/query/execute',
       { conn_id: connId.value, stmt: dialect, limit: 100, schema: schema.value ?? undefined })
     const r = results[0]
@@ -139,10 +165,12 @@ async function cancel() {
 /** 大结果集:从服务端缓冲拉下一页(由 ResultGrid 滚动到底时触发,也可点按钮) */
 async function loadMore() {
   if (!queryId.value || !hasMore.value || loadingMore.value) return
+  const qid = queryId.value    // 请求在途时可能重新执行,回来要认的是同一个 qid
   loadingMore.value = true
   try {
-    const d = await get<any>(`/api/query/${queryId.value}/rows`,
+    const d = await get<any>(`/api/query/${qid}/rows`,
       { offset: rows.value.length, limit: 500 })
+    if (queryId.value !== qid) return    // 已换/已重发查询,丢弃这一页
     rows.value.push(...d.rows)
     hasMore.value = d.has_more
     statusText.value = `${rows.value.length} 行(已缓冲 ${d.total_buffered})${d.has_more ? ' · 还有更多' : ''}`
@@ -160,13 +188,13 @@ watch(() => ui.executeNonce, () => {
   if (workspace.activeId === props.tab.id) run()
 })
 
-// AI"插入并执行":本 Tab 挂载后自动执行
-onMounted(() => {
-  if (ui.pendingRunTabId === props.tab.id) {
-    ui.pendingRunTabId = null
-    nextTick(() => run())
-  }
-})
+// AI"插入并执行":本页签被指定时执行一次。
+// 用 watch + immediate 而非 onMounted:KeepAlive 缓存的组件重新激活不再触发 onMounted。
+watch(() => ui.pendingRunTabId, (id) => {
+  if (id !== props.tab.id) return
+  ui.pendingRunTabId = null
+  nextTick(() => run())
+}, { immediate: true })
 
 defineExpose({ run })
 </script>
@@ -191,7 +219,7 @@ defineExpose({ run })
       </span>
     </div>
     <div class="editor-wrap">
-      <CodeEditor ref="editorRef" lang="sql" :model-value="tab.content" @update:model-value="onEdit" @execute="run" />
+      <CodeEditor lang="sql" :model-value="tab.content" @update:model-value="onEdit" @execute="run" />
     </div>
     <div class="hsplit" @pointerdown="resultsSplit" />
     <div class="results" :style="{ height: resultsHeight + 'px' }">

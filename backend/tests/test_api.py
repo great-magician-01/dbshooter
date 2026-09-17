@@ -152,3 +152,68 @@ def test_readonly_enforced_via_api(client, sqlite_db):
     r = client.post('/api/query/execute',
                     json={'conn_id': cid, 'stmt': 'SELECT count(*) FROM users'})
     assert r.status_code == 200
+
+
+def test_rest_limit_capped(client, sqlite_conn_id):
+    """REST 通道 limit 必须设上限,防大 limit 把内存打爆(WS 主通道固定 BUFFER_CAP)。"""
+    r = client.post('/api/query/execute',
+                    json={'conn_id': sqlite_conn_id, 'stmt': 'SELECT 1', 'limit': 9999999})
+    assert r.status_code == 422
+    r = client.post('/api/query/export',
+                    json={'conn_id': sqlite_conn_id, 'stmt': 'SELECT 1', 'limit': 9999999})
+    assert r.status_code == 422
+    # 边界内的值照常
+    r = client.post('/api/query/execute',
+                    json={'conn_id': sqlite_conn_id, 'stmt': 'SELECT 1', 'limit': 5000})
+    assert r.status_code == 200
+
+
+def test_update_connection_merge_semantics(client, sqlite_db):
+    """update 缺省字段沿用旧值:漏传 readonly/params 不应静默解除只读/清空参数。"""
+    cid = client.post('/api/connections', json={
+        'name': 'ro', 'type': 'sqlite', 'params': {'path': sqlite_db},
+        'readonly': True, 'database': 'x'}).json()['item']['id']
+    # 只改名字,不传 params/readonly/database
+    r = client.post('/api/connections/update',
+                    json={'id': cid, 'name': '改名', 'type': 'sqlite'})
+    item = r.json()['item']
+    assert item['readonly'] is True
+    assert item['params'] == {'path': sqlite_db}
+    assert item['database'] == 'x'
+    # 只读仍生效(连接还能用,说明 params 未丢)
+    r = client.post('/api/query/execute', json={'conn_id': cid, 'stmt': 'DELETE FROM users'})
+    assert r.status_code == 400 and '只读' in r.json()['detail']
+    # 显式传 false 才解除
+    client.post('/api/connections/update',
+                json={'id': cid, 'name': '改名', 'type': 'sqlite', 'readonly': False})
+    items = {i['id']: i for i in client.get('/api/connections').json()['items']}
+    assert items[cid]['readonly'] is False
+
+
+def test_settings_key_validation(client):
+    assert client.post('/api/settings/save',
+                        json={'values': {'theme': 'dark'}}).status_code == 200
+    assert client.post('/api/settings/save',
+                       json={'values': {'bad key!': 'x'}}).status_code == 422
+    assert client.post('/api/settings/save',
+                       json={'values': {'x' * 65: 'x'}}).status_code == 422
+
+
+def test_export_csv_formula_injection(client, sqlite_conn_id):
+    """Excel 公式注入防护:=/+/-/@ 开头的单元格前缀单引号。"""
+    client.post('/api/query/execute', json={
+        'conn_id': sqlite_conn_id,
+        'stmt': "CREATE TABLE f(v TEXT); INSERT INTO f VALUES ('=SUM(A1:A2)'), ('普通')"})
+    r = client.post('/api/query/export', json={'conn_id': sqlite_conn_id,
+                                               'stmt': 'SELECT v FROM f'})
+    text = r.content.decode('utf-8')
+    assert "'=SUM(A1:A2)" in text and '普通' in text
+
+
+def test_ddl_repeated_table_params(client, sqlite_conn_id):
+    """ddl 路由支持重复 tables 参数与逗号分隔两种传法。"""
+    r = client.get(f'/api/connections/{sqlite_conn_id}/ddl',
+                   params=[('tables', 'users'), ('tables', 'v_users')])
+    assert r.status_code == 200 and 'CREATE TABLE' in r.json()['ddl']
+    r = client.get(f'/api/connections/{sqlite_conn_id}/ddl?tables=users,v_users')
+    assert 'CREATE VIEW' in r.json()['ddl']

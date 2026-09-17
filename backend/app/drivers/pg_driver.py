@@ -36,12 +36,17 @@ class PgDriver(DriverBase):
 
     async def connect(self) -> None:
         if self.pool is None:
-            self.pool = await asyncpg.create_pool(
+            kwargs: dict[str, Any] = dict(
                 host=self.cfg.get('host') or '127.0.0.1',
                 port=int(self.cfg.get('port') or 5432),
                 user=self.cfg.get('username') or 'postgres',
                 password=self.cfg.get('password') or '',
                 database=self.current_db, min_size=1, max_size=5, timeout=5)
+            if bool(self.cfg.get('readonly')):
+                # 会话级只读:连 WITH x AS (DELETE ...) 的数据修改 CTE 和
+                # EXPLAIN ANALYZE <DML>(会真实执行语句)也一并拦截
+                kwargs['server_settings'] = {'default_transaction_read_only': 'on'}
+            self.pool = await asyncpg.create_pool(**kwargs)
 
     async def test(self) -> tuple[bool, str]:
         t0 = time.monotonic()
@@ -126,7 +131,8 @@ class PgDriver(DriverBase):
         async with self.pool.acquire() as acq:
             # asyncpg 的 acquire() 无类型标注且返回动态代理,按 Connection 使用
             conn = cast(asyncpg.Connection, acq)
-            for single in split_sql(stmt):
+            # PG 默认 standard_conforming_strings=on,字符串里的 \ 是字面量而非转义
+            for single in split_sql(stmt, backslash_escapes=False):
                 ensure_writable(single, readonly)
                 t0 = time.monotonic()
                 try:

@@ -1,11 +1,12 @@
 """AI:text2sql 问答(WS 流式)+ Provider/会话管理。"""
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import typer
 
-from ..client import resolve_base, resolve_token
+from ..client import ApiClient, resolve_base, resolve_token
 from ..errors import CliError, handle_cli_error
 from ..output import make_console, print_json, print_rows, resolve_list_format, warn
 from ..resolve import resolve_conn
@@ -33,26 +34,37 @@ def ask(ctx: typer.Context,
     client = st.client()
     row = resolve_conn(client, conn)
     session_id = session
+    created_id: str | None = None   # 本次命令新建的会话,WS 失败时要补偿删除(不留孤儿)
     if not session_id:
         item = client.post('/api/ai/sessions',
                            {'title': question[:30], 'connection_id': row['id']})['item']
         session_id = item['id']
+        created_id = session_id
     url = ws_url(resolve_base(st.server), resolve_token(st.token))
     payload = {'session_id': session_id, 'conn_id': row['id'], 'question': question}
 
     done: dict[str, Any] | None = None
-    for event, data in stream_ai_events(url, payload, max(st.timeout, 300.0)):
-        if event == 'ai.token':
-            if not sql_only:
-                print(data.get('delta', ''), end='', flush=True)
-        elif event == 'ai.tool':
-            # 工具轨迹走 stderr,不污染 stdout 的正文/管道
-            warn(f"[工具:{data.get('status')}] {data.get('name')} "
-                 f"{_short_args(data.get('args'))} {data.get('summary', '')}")
-        elif event in ('ai.error', 'error'):
-            raise CliError(str(data.get('message') or 'AI 调用失败'))
-        elif event == 'ai.done':
-            done = data
+    got_event = False
+    try:
+        for event, data in stream_ai_events(url, payload, max(st.timeout, 300.0)):
+            got_event = True
+            if event == 'ai.token':
+                if not sql_only:
+                    print(data.get('delta', ''), end='', flush=True)
+            elif event == 'ai.tool':
+                # 工具轨迹走 stderr,不污染 stdout 的正文/管道
+                warn(f"[工具:{data.get('status')}] {data.get('name')} "
+                     f"{_short_args(data.get('args'))} {data.get('summary', '')}")
+            elif event in ('ai.error', 'error'):
+                raise CliError(str(data.get('message') or 'AI 调用失败'))
+            elif event == 'ai.done':
+                done = data
+    except CliError:
+        # 一个事件都没收到 = WS 压根没建起来:刚建的会话没人用过,删掉;
+        # 已经跑起来的(AI 报错等)保留,里面有对话痕迹
+        if created_id is not None and not got_event:
+            _delete_session_quiet(client, created_id)
+        raise
     sql = (done or {}).get('sql') or ''
     if sql_only:
         if not sql:
@@ -70,6 +82,14 @@ def ask(ctx: typer.Context,
 def _short_args(args: Any, width: int = 80) -> str:
     s = str(args or '')
     return s if len(s) <= width else s[:width - 1] + '…'
+
+
+def _delete_session_quiet(client: ApiClient, sid: str) -> None:
+    """补偿删除:清理失败只当没做成,不能盖掉用户已经看到的原始错误。"""
+    try:
+        client.post('/api/ai/sessions/delete', {'id': sid})
+    except Exception:   # noqa: BLE001 - 尽力而为的清理,任何异常都不该影响退出码与报错
+        pass
 
 
 # ── providers ──
@@ -99,7 +119,13 @@ def providers_add(ctx: typer.Context,
                   activate: bool = typer.Option(False, '--activate', help='同时设为生效 Provider')) -> None:
     """新增 Provider(OpenAI 兼容 Chat Completions)。"""
     if api_key is None:
-        api_key = typer.prompt('API Key(留空跳过)', hide_input=True, default='', show_default=False)
+        # 非交互(CI / cron / </dev/null)不能弹提示,否则 typer 直接 Abort;
+        # 与 conn._ask_password 同口径:留空跳过(本地推理服务允许无 key)
+        if not sys.stdin.isatty():
+            warn('非交互环境:跳过 API Key 输入(需要时用 --api-key 提供)')
+            api_key = ''
+        else:
+            api_key = typer.prompt('API Key(留空跳过)', hide_input=True, default='', show_default=False)
     client = get_state(ctx).client()
     item = client.post('/api/ai/providers', {'name': name, 'base_url': base_url,
                                              'api_key': api_key, 'model': model})['item']

@@ -7,6 +7,7 @@ import { useConnectionsStore } from '@/stores/connections'
 import { useUiStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { showContextMenu, type MenuItem } from '@/utils/contextMenu'
+import { toast } from '@/utils/toast'
 
 const conns = useConnectionsStore()
 const ui = useUiStore()
@@ -32,6 +33,16 @@ function openConnTab(conn: { id: string; type: string; name: string }) {
     workspace.addTab({ type: 'mongo', title: conn.name, connection_id: conn.id })
   } else {
     workspace.addTab({ type: 'sql', title: undefined, connection_id: conn.id })
+  }
+}
+
+/** 删除连接:先二次确认(会连带清掉保存的密码,误点代价大) */
+async function removeConn(conn: { id: string; name: string }) {
+  if (!confirm(`确定删除连接「${conn.name}」吗?该操作不可撤销。`)) return
+  try {
+    await conns.remove(conn.id)
+  } catch (e: any) {
+    toast(e.message, 'err')
   }
 }
 
@@ -72,7 +83,7 @@ onMounted(() => { if (!conns.items.length) conns.load() })
         <span class="tn-actions">
           <button class="icon-btn" title="编辑连接" @click.stop="ui.openConnDialog(conn.id)"><AppIcon name="edit" :size="12" /></button>
           <button class="icon-btn" title="删除连接"
-                  @click.stop="conns.remove(conn.id)"><AppIcon name="close" :size="12" /></button>
+                  @click.stop="removeConn(conn)"><AppIcon name="close" :size="12" /></button>
         </span>
       </div>
       <div class="tn-children">

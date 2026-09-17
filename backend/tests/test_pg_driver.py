@@ -1,7 +1,7 @@
 """PG 驱动:fake asyncpg 池验证 schema 绑定(SET LOCAL search_path),不连真实 PG。"""
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 
 import asyncpg
 import pytest
@@ -148,3 +148,22 @@ async def test_schema_error_isolated(pg: PgDriver):
     assert len(sets) == 2
     # 出错后事务深度归零,未污染下一条语句的执行环境
     assert _conn(pg).depth == 0
+
+
+async def test_readonly_server_settings(monkeypatch):
+    """只读连接在服务端开会话级只读:数据修改 CTE / EXPLAIN ANALYZE DML 一并拦截。"""
+    captured: dict[str, Any] = {}
+
+    async def fake_create_pool(**kwargs: Any):
+        captured.update(kwargs)
+        return _Pool()
+
+    monkeypatch.setattr(asyncpg, 'create_pool', fake_create_pool)
+    d = PgDriver({'type': 'pg', 'database': 'demo', 'readonly': True})
+    await d.connect()
+    assert captured['server_settings'] == {'default_transaction_read_only': 'on'}
+
+    captured.clear()
+    d2 = PgDriver({'type': 'pg', 'database': 'demo'})
+    await d2.connect()
+    assert 'server_settings' not in captured  # 普通连接不受影响

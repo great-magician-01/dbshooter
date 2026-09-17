@@ -3,25 +3,44 @@ from __future__ import annotations
 
 import datetime
 import decimal
+import re
 import uuid
 from collections.abc import Mapping, Set
 from typing import Any
 
 from .base import READONLY_PREFIXES
 
+# PG dollar-quoting 开界定符:$$ 或 $tag$(函数体常用,内含分号不可拆)
+_DOLLAR_OPEN = re.compile(r'\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$')
 
-def split_sql(script: str) -> list[str]:
-    """按分号拆分脚本,跳过单双引号字符串、反引号标识符、行/块注释。"""
+
+def split_sql(script: str, *, backslash_escapes: bool = True) -> list[str]:
+    """按分号拆分脚本,跳过字符串/标识符/注释/dollar-quoting 内的分号。
+
+    backslash_escapes:引号字符串内反斜杠是否当转义。MySQL 默认开;
+    SQLite 与 PG(standard_conforming_strings=on)是字面量,须关掉,
+    否则 `'a\\'; SELECT 1` 会被误并成一条语句。
+    """
     stmts: list[str] = []
     buf: list[str] = []
     i, n = 0, len(script)
-    state = None  # None | "'" | '"' | '`' | '--' | '/*'
+    state: str | None = None   # None | "'" | '"' | '`' | '--' | '/*' | '$'
+    dollar = ''               # state == '$' 时的界定符($$ 或 $tag$)
     while i < n:
         ch = script[i]
         nxt = script[i + 1] if i + 1 < n else ''
         if state is None:
             if ch in ('\'', '"', '`'):
                 state = ch
+            elif ch == '$':
+                m = _DOLLAR_OPEN.match(script, i)
+                if m:
+                    dollar = m.group()
+                    buf.append(dollar)
+                    i = m.end()
+                    state = '$'
+                    continue
+                # 普通含 $ 的标识符/占位符($1 等)按原样走
             elif ch == '-' and nxt == '-':
                 state = '--'
             elif ch == '/' and nxt == '*':
@@ -34,7 +53,7 @@ def split_sql(script: str) -> list[str]:
                 i += 1
                 continue
         elif state in ('\'', '"', '`'):
-            if ch == '\\' and state != '`':
+            if ch == '\\' and state != '`' and backslash_escapes:
                 buf.append(ch)
                 i += 1
                 if i < n:
@@ -43,6 +62,12 @@ def split_sql(script: str) -> list[str]:
                 continue
             if ch == state:
                 state = None
+        elif state == '$':
+            if script.startswith(dollar, i):
+                buf.append(dollar)
+                i += len(dollar)
+                state = None
+                continue
         elif state == '--':
             if ch == '\n':
                 state = None

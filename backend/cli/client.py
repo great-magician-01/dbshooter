@@ -18,6 +18,17 @@ _UNREACHABLE_HINT = ('无法连接服务 {base}:连接被拒绝。'
                      '先启动服务(python run.py / dbs serve),或用 --server / DBSHOOTER_URL 指定地址')
 
 
+def _as_json(resp: httpx.Response) -> Any:
+    """2xx 但响应体不是 JSON(如 --server 指到了别的 web 服务/反代欢迎页):
+
+    归一化为可读错误(退出码 3),不让 json.JSONDecodeError 裸穿到终端。"""
+    try:
+        return resp.json()
+    except ValueError as e:   # json.JSONDecodeError 是其子类
+        raise CliError('响应不是 JSON(可能不是 dbshooter 服务,检查 --server)',
+                       EXIT_UNREACHABLE) from e
+
+
 def _raise_for(resp: httpx.Response) -> None:
     """非 2xx 归一化为 CliError;业务错误沿用 FastAPI 的 {"detail": ...}。"""
     if resp.status_code < 400:
@@ -44,7 +55,7 @@ class ApiClient:
         except (httpx.ConnectError, httpx.ConnectTimeout) as e:
             raise CliError(self._unreachable(), EXIT_UNREACHABLE) from e
         _raise_for(resp)
-        return resp.json()
+        return _as_json(resp)
 
     def post(self, url: str, body: dict[str, Any] | None = None) -> Any:
         try:
@@ -52,7 +63,7 @@ class ApiClient:
         except (httpx.ConnectError, httpx.ConnectTimeout) as e:
             raise CliError(self._unreachable(), EXIT_UNREACHABLE) from e
         _raise_for(resp)
-        return resp.json()
+        return _as_json(resp)
 
     @contextmanager
     def stream(self, url: str, body: dict[str, Any]) -> Iterator[httpx.Response]:

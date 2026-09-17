@@ -71,9 +71,11 @@ async def metadata(cid: str, path: str = ''):
 
 
 @router.get('/{cid}/ddl')
-async def ddl(cid: str, tables: str = ''):
+async def ddl(cid: str, tables: list[str] = Query([])):
+    """tables 支持重复参数(?tables=a&tables=b)与逗号分隔(旧格式)两种传法。"""
     driver = await manager.get(cid)
-    text = await driver.ddl([t for t in tables.split(',') if t])
+    flat = [s for t in tables for s in t.split(',') if s]
+    text = await driver.ddl(flat)
     return {'ddl': text}
 
 

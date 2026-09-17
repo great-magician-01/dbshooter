@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import AppIcon from '@/components/AppIcon.vue'
 import { useAiStore } from '@/stores/ai'
@@ -15,11 +15,17 @@ const question = ref('')
 const provMenuOpen = ref(false)
 const sessMenuOpen = ref(false)
 const msgsEl = ref<HTMLElement>()
+/** 流式期间持续滚动的定时器(停止发送后自行结束) */
+let scrollTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => { if (!ai.sessions.length) ai.loadSessions() })
 
 function scrollBottom() {
   nextTick(() => { if (msgsEl.value) msgsEl.value.scrollTop = msgsEl.value.scrollHeight })
+}
+
+function stopScrollTimer() {
+  if (scrollTimer) { clearInterval(scrollTimer); scrollTimer = null }
 }
 
 async function send() {
@@ -29,9 +35,10 @@ async function send() {
   await ai.ask(q, workspace.activeTab?.connection_id ?? null)
   scrollBottom()
   // 流式期间持续滚动
-  const timer = setInterval(() => {
+  stopScrollTimer()
+  scrollTimer = setInterval(() => {
     scrollBottom()
-    if (!ai.generating) clearInterval(timer)
+    if (!ai.generating) stopScrollTimer()
   }, 200)
 }
 
@@ -55,9 +62,31 @@ function insertSql(sql: string, run: boolean) {
   toast(run ? '已插入,执行中…' : '已插入到 SQL 编辑器', 'ok')
 }
 
-function copySql(sql: string) {
-  navigator.clipboard?.writeText(sql)
-  toast('已复制', 'ok')
+/** 复制文本:优先 clipboard API(非安全上下文 / 权限拒绝时回退 execCommand) */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch { /* 局域网 IP 访问等非安全上下文,走下面的回退 */ }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.top = '-1000px'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch { return false }
+}
+
+async function copySql(sql: string) {
+  const ok = await copyText(sql)
+  toast(ok ? '已复制' : '复制失败,请手动选中文本复制', ok ? 'ok' : 'err')
 }
 
 async function pickProvider(id: string) {
@@ -84,6 +113,10 @@ function closeMenus(e: MouseEvent) {
   }
 }
 onMounted(() => document.addEventListener('click', closeMenus))
+onBeforeUnmount(() => {
+  document.removeEventListener('click', closeMenus)
+  stopScrollTimer()
+})
 </script>
 
 <template>

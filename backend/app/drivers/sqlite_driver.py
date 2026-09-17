@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
+from urllib.parse import quote
 
 import aiosqlite
 
@@ -22,7 +23,13 @@ class SqliteDriver(DriverBase):
 
     async def connect(self) -> None:
         if self.conn is None:
-            self.conn = await aiosqlite.connect(self.path)
+            # 只读连接:file: URI + mode=ro,在 SQLite 内核层只读,
+            # PRAGMA 写入(如 user_version)也无法绕过首词拦截
+            if bool(self.cfg.get('readonly')) and self.path != ':memory:':
+                uri = f'file:{quote(self.path)}?mode=ro'
+                self.conn = await aiosqlite.connect(uri, uri=True)
+            else:
+                self.conn = await aiosqlite.connect(self.path)
 
     async def test(self) -> tuple[bool, str]:
         t0 = time.monotonic()
@@ -55,7 +62,9 @@ class SqliteDriver(DriverBase):
             return nodes
         table = parts[1]
         cols = []
-        async with self.conn.execute(f'PRAGMA table_info("{table}")') as cur:
+        # PRAGMA 不支持参数绑定,标识符双引号翻倍防注入(表名含 " 时不再语法错)
+        safe = table.replace('"', '""')
+        async with self.conn.execute(f'PRAGMA table_info("{safe}")') as cur:
             async for cid, name, ctype, notnull, dflt, pk in cur:
                 cols.append(MetaNode(path=f'{path}.{name}', label=name, kind='column',
                                      extra={'type': ctype or '', 'pk': bool(pk),
@@ -90,7 +99,8 @@ class SqliteDriver(DriverBase):
         assert self.conn is not None
         readonly = bool(self.cfg.get('readonly'))
         results: list[ExecResult] = []
-        for single in split_sql(stmt):
+        # SQLite 字符串字面量无反斜杠转义('' 才是转义),关掉拆分器的 MySQL 转义语义
+        for single in split_sql(stmt, backslash_escapes=False):
             ensure_writable(single, readonly)
             t0 = time.monotonic()
             try:

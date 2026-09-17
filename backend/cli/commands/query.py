@@ -11,12 +11,16 @@ from typing import Any
 import typer
 
 from ..errors import CliError, handle_cli_error
-from ..output import (FMT_CHOICES, make_console, print_json, print_results,
-                      print_rows, resolve_format, resolve_list_format, result_to_csv)
+from ..output import (FMT_CHOICES, data_results, make_console, print_json, print_results,
+                      print_rows, resolve_format, resolve_list_format, write_results_csv)
 from ..resolve import resolve_conn
 from ..state import get_state
 
 _FMT_OPT = typer.Option(None, '--format', help=f'输出格式: {"/".join(FMT_CHOICES)}')
+
+# 与服务端 /api/query/execute、/api/query/export 的 limit 校验保持一致,提前本地报错
+QUERY_LIMIT_MAX = 5000
+EXPORT_LIMIT_MAX = 50000
 
 
 def _read_stmt(stmt: str | None, file: str | None, use_stdin: bool) -> str:
@@ -26,10 +30,19 @@ def _read_stmt(stmt: str | None, file: str | None, use_stdin: bool) -> str:
     if file is not None:
         return _read_stmt_file(file)
     if use_stdin:
-        return sys.stdin.read()
+        # 管道带 BOM(Windows "UTF-8 with BOM" 存盘/重定向)时首词会带上 BOM(\ufeff),变成 \ufeffSELECT,
+        # 服务端只读拦截按首词判断会误判 → 与 _read_stmt_file 的 utf-8-sig 对齐,先剥掉
+        return sys.stdin.read().lstrip('\ufeff')
     if not stmt or not stmt.strip():
         raise CliError('缺少语句:直接跟在 CONN 后,或用 -f 文件 / --stdin 管道')
     return stmt
+
+
+def _check_limit(limit: int, max_: int) -> int:
+    """本地校验 limit 上限:超限直接给中文报错,不要等服务端 422。"""
+    if not 1 <= limit <= max_:
+        raise CliError(f'--limit 需在 1~{max_} 之间: {limit}')
+    return limit
 
 
 def _read_stmt_file(file: str) -> str:
@@ -42,11 +55,6 @@ def _read_stmt_file(file: str) -> str:
         except UnicodeDecodeError:
             continue
     raise CliError(f'无法识别文件编码(支持 UTF-8/GBK): {file}')
-
-
-def _first_rows(results: list[dict[str, Any]]) -> dict[str, Any] | None:
-    return next((r for r in results
-                 if r.get('kind') in ('rows', 'documents') and not r.get('error')), None)
 
 
 @handle_cli_error
@@ -65,16 +73,17 @@ def query(ctx: typer.Context,
     row = resolve_conn(client, conn)
     text = _read_stmt(stmt, file, use_stdin)
     r = client.post('/api/query/execute', {'conn_id': row['id'], 'stmt': text,
-                                           'limit': limit, 'schema': schema})
+                                           'limit': _check_limit(limit, QUERY_LIMIT_MAX),
+                                           'schema': schema})
     results: list[dict[str, Any]] = r['results']
     if out is not None:
-        first = _first_rows(results)
-        if first is None:
+        # 与 --format csv 同一渲染口径:全部含数据的结果集都落盘(含 redis command 结果)
+        if not data_results(results):
             err = next((x.get('error') for x in results if x.get('error')), '查询无结果集')
             raise CliError(str(err))
         with open(out, 'w', encoding='utf-8-sig', newline='') as f:  # BOM:Excel 直开不乱码
-            f.write(result_to_csv(first))
-        typer.echo(f"已导出 {len(first.get('rows', []))} 行 → {out}")
+            n = write_results_csv(results, f)
+        typer.echo(f'已导出 {n} 行 → {out}')
         return
     errors = print_results(results, resolve_format(fmt), make_console(st.no_color))
     if errors:
@@ -84,15 +93,22 @@ def query(ctx: typer.Context,
 @handle_cli_error
 def export(ctx: typer.Context,
            conn: str = typer.Argument(..., metavar='CONN'),
-           stmt: str = typer.Argument(..., help='查询语句'),
+           stmt: str | None = typer.Argument(None, help='查询语句(或 -f / --stdin)'),
+           file: str | None = typer.Option(None, '--file', '-f', help='从文件读语句'),
+           use_stdin: bool = typer.Option(False, '--stdin', help='从标准输入读语句'),
            out: str = typer.Option('export.csv', '--out', '-o', help='输出文件'),
-           limit: int = typer.Option(10000, '--limit')) -> None:
-    """大结果集导出 CSV(服务端流式生成,本地分块落盘)。"""
+           limit: int = typer.Option(10000, '--limit'),
+           schema: str | None = typer.Option(None, '--schema', help='命名空间(目前仅 PG 生效)')) -> None:
+    """大结果集导出 CSV(服务端流式生成,本地分块落盘)。
+
+    文件名由 -o 指定,不解析服务端的 Content-Disposition(本地自命名更可控)。"""
     client = get_state(ctx).client()
     row = resolve_conn(client, conn)
+    text = _read_stmt(stmt, file, use_stdin)
     n = 0
     with client.stream('/api/query/export',
-                       {'conn_id': row['id'], 'stmt': stmt, 'limit': limit}) as resp:
+                       {'conn_id': row['id'], 'stmt': text, 'schema': schema,
+                        'limit': _check_limit(limit, EXPORT_LIMIT_MAX)}) as resp:
         # 服务端流是纯 UTF-8 无 BOM,本地补 BOM,与 query -o 行为一致(Excel 直开不乱码)
         with open(out, 'wb') as f:
             f.write(b'\xef\xbb\xbf')
