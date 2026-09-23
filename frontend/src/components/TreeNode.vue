@@ -86,10 +86,12 @@ function openTab() {
   if (node.kind === 'table' || node.kind === 'view') {
     const segs = node.path.split('.')
     workspace.addTab({
-      type: 'data', connection_id: conn.id,
+      type: 'table', connection_id: conn.id,
       // PG 等带 schema 段的路径,标题展示 schema 前缀以区分同名表
       title: segs.length >= 3 ? `${segs[segs.length - 2]}.${node.label}` : node.label,
-      context: { table: node.label, ref: qualifiedTable(conn.type, node.path), path: node.path },
+      // kind 供表详情页区分表/视图(如 ER 空态文案)
+      context: { table: node.label, ref: qualifiedTable(conn.type, node.path),
+                 path: node.path, kind: node.kind },
     })
   } else if (node.kind === 'collection') {
     workspace.addTab({

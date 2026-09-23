@@ -6,7 +6,8 @@ from typing import Any
 
 import aiomysql
 
-from .base import DriverBase, ExecResult, MetaNode, QueryError, ensure_writable, register
+from .base import (ColumnInfo, DriverBase, ExecResult, MetaNode, QueryError,
+                   RelationInfo, ensure_writable, register)
 from .sqlutil import jsonable, split_sql
 
 # information_schema.COLUMNS.DATA_TYPE 直接可用,执行结果的 type_code → 名称简化映射
@@ -116,6 +117,57 @@ class MysqlDriver(DriverBase):
                 except Exception:
                     continue
         return '\n\n'.join(out)
+
+    async def table_columns(self, path: str) -> list[ColumnInfo]:
+        await self.connect()
+        assert self.pool is not None
+        parts = path.split('.')
+        db, table = (parts[-2], parts[-1]) if len(parts) >= 2 else (
+            self.cfg.get('database') or '', parts[-1])
+        async with self.pool.acquire() as conn, conn.cursor() as cur:
+            # COLUMN_TYPE 是全型(varchar(64)/int unsigned);视图列同样覆盖
+            await cur.execute(
+                'SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, COLUMN_KEY,'
+                ' ORDINAL_POSITION, COLUMN_COMMENT'
+                ' FROM information_schema.COLUMNS'
+                ' WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION',
+                (db, table))
+            return [ColumnInfo(name=name, type=ctype, nullable=nullable == 'YES',
+                               default=None if dflt is None else str(dflt),
+                               pk=key == 'PRI', ordinal=int(ordinal),
+                               comment=comment or '')
+                    for name, ctype, nullable, dflt, key, ordinal, comment
+                    in await cur.fetchall()]
+
+    async def table_relations(self, path: str) -> list[RelationInfo]:
+        await self.connect()
+        assert self.pool is not None
+        parts = path.split('.')
+        db, table = (parts[-2], parts[-1]) if len(parts) >= 2 else (
+            self.cfg.get('database') or '', parts[-1])
+        async with self.pool.acquire() as conn, conn.cursor() as cur:
+            # 双向过滤(我引用的 + 引用我的);跨库 FK 由 REFERENCED_TABLE_SCHEMA 承载
+            await cur.execute(
+                'SELECT CONSTRAINT_NAME, TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME,'
+                ' REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME,'
+                ' ORDINAL_POSITION'
+                ' FROM information_schema.KEY_COLUMN_USAGE'
+                ' WHERE REFERENCED_TABLE_NAME IS NOT NULL'
+                ' AND ((TABLE_SCHEMA=%s AND TABLE_NAME=%s)'
+                '  OR (REFERENCED_TABLE_SCHEMA=%s AND REFERENCED_TABLE_NAME=%s))'
+                ' ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION',
+                (db, table, db, table))
+            rels: list[RelationInfo] = []
+            for (name, src_schema, src_table, src_col,
+                 ref_schema, ref_table, ref_col, seq) in await cur.fetchall():
+                # 自引用行同时命中两侧条件,先判 'out',天然只记一次
+                direction = ('out' if src_schema == db and src_table == table else 'in')
+                rels.append(RelationInfo(
+                    name=name, direction=direction,
+                    schema=src_schema, table=src_table, column=src_col,
+                    ref_schema=ref_schema, ref_table=ref_table, ref_column=ref_col,
+                    seq=int(seq) - 1))  # ORDINAL_POSITION 1 起,归一为 0 起
+            return rels
 
     async def execute(self, stmt: str, limit: int = 500,
                       schema: str | None = None) -> list[ExecResult]:

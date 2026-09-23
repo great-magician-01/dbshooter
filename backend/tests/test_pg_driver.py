@@ -74,6 +74,58 @@ class _Conn:
             raise Exception('relation "nope" does not exist')
         return _PS(sql)
 
+    async def fetchval(self, sql: str, *args: Any) -> Any:
+        self.log.append(('fetchval', self.depth, sql))
+        if 'relkind' in sql:
+            # v_users 罐装为视图,其余为普通表
+            return 'v' if args and args[1] == 'v_users' else 'r'
+        if 'pg_get_viewdef' in sql:
+            return 'SELECT id, name FROM public.users'
+        return None
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        """结构/关系元数据查询的罐装返回(按 SQL 子串路由)。"""
+        self.log.append(('fetch', self.depth, sql))
+        if 'pg_attribute a' in sql and 'format_type' in sql:
+            return [
+                {'name': 'id', 'type': 'integer', 'nullable': False,
+                 'default': "nextval('users_id_seq'::regclass)", 'ordinal': 1,
+                 'comment': None},
+                {'name': 'name', 'type': 'character varying(64)', 'nullable': True,
+                 'default': None, 'ordinal': 2, 'comment': '姓名'},
+            ]
+        if 'pg_index i' in sql:
+            return [{'attname': 'id'}]
+        if 'pg_constraint con' in sql:
+            # 复刻 WHERE:双侧 (schema, table) 过滤 + conname/序号排序
+            schema, table = args[0], args[1]
+            rows = [r for r in _FK_ROWS
+                    if (r['src_schema'], r['src_table']) == (schema, table)
+                    or (r['ref_schema'], r['ref_table']) == (schema, table)]
+            return sorted(rows, key=lambda r: (r['name'], r['seq']))
+        return []
+
+
+# pg_constraint 罐装数据(seq 按 PG WITH ORDINALITY 口径 1 起)
+_FK_ROWS = [
+    {'name': 'fk_orders_user', 'src_schema': 'public', 'src_table': 'orders',
+     'src_column': 'user_id', 'ref_schema': 'public', 'ref_table': 'users',
+     'ref_column': 'id', 'seq': 1},
+    {'name': 'fk_emp_mgr', 'src_schema': 'public', 'src_table': 'employees',
+     'src_column': 'manager_id', 'ref_schema': 'public', 'ref_table': 'employees',
+     'ref_column': 'id', 'seq': 1},
+    {'name': 'fk_children', 'src_schema': 'public', 'src_table': 'children',
+     'src_column': 'x', 'ref_schema': 'public', 'ref_table': 'parents',
+     'ref_column': 'a', 'seq': 1},
+    {'name': 'fk_children', 'src_schema': 'public', 'src_table': 'children',
+     'src_column': 'y', 'ref_schema': 'public', 'ref_table': 'parents',
+     'ref_column': 'b', 'seq': 2},
+    # 跨 schema 引用(users 的入站)
+    {'name': 'fk_cross', 'src_schema': 'sales', 'src_table': 't1',
+     'src_column': 'uid', 'ref_schema': 'public', 'ref_table': 'users',
+     'ref_column': 'id', 'seq': 1},
+]
+
 
 class _Pool:
     def __init__(self):
@@ -167,3 +219,65 @@ async def test_readonly_server_settings(monkeypatch):
     d2 = PgDriver({'type': 'pg', 'database': 'demo'})
     await d2.connect()
     assert 'server_settings' not in captured  # 普通连接不受影响
+
+
+async def test_table_columns(pg: PgDriver):
+    """结构页签:pg_attribute 全型 + 注释 + PK merge;序号 1 起。"""
+    cols = await pg.table_columns('demo.public.users')
+    assert [c.name for c in cols] == ['id', 'name']
+    id_col, name_col = cols
+    assert id_col.pk is True and id_col.nullable is False and id_col.ordinal == 1
+    assert id_col.default == "nextval('users_id_seq'::regclass)"
+    assert name_col.type == 'character varying(64)' and name_col.comment == '姓名'
+    assert name_col.pk is False
+    sql = next(e[2] for e in _conn(pg).log if e[0] == 'fetch')
+    assert 'pg_attribute' in sql and 'col_description' in sql
+
+
+async def test_table_relations_bidirectional(pg: PgDriver):
+    """users:orders 的普通入站 + 跨 schema 入站(sales.t1)。"""
+    rels = await pg.table_relations('demo.public.users')
+    assert {r.name for r in rels} == {'fk_orders_user', 'fk_cross'}
+    assert all(r.direction == 'in' for r in rels)
+    cross = next(r for r in rels if r.name == 'fk_cross')
+    assert cross.schema == 'sales' and cross.table == 't1' and cross.column == 'uid'
+    assert cross.ref_schema == 'public' and cross.ref_table == 'users'
+    sql = next(e[2] for e in _conn(pg).log if e[0] == 'fetch')
+    assert "contype = 'f'" in sql
+
+
+async def test_table_relations_self_reference(pg: PgDriver):
+    """自引用同时命中双侧条件,只记一条 'out'。"""
+    rels = await pg.table_relations('demo.public.employees')
+    assert len(rels) == 1
+    rel = rels[0]
+    assert rel.direction == 'out' and rel.table == 'employees'
+    assert rel.ref_table == 'employees' and rel.ref_column == 'id'
+
+
+async def test_table_relations_composite(pg: PgDriver):
+    """复合 FK:同名两行,PG 序号 1 起归一为 0 起;出站方向。"""
+    rels = await pg.table_relations('demo.public.children')
+    assert len(rels) == 2
+    by_seq = {r.seq: r for r in rels}
+    assert by_seq[0].column == 'x' and by_seq[0].ref_column == 'a'
+    assert by_seq[1].column == 'y' and by_seq[1].ref_column == 'b'
+    assert all(r.direction == 'out' and r.name == 'fk_children' for r in rels)
+
+
+async def test_ddl_synthesis(pg: PgDriver):
+    """DDL 页签/AI 上下文:合成 CREATE TABLE 含 NOT NULL/DEFAULT/PK/FK。"""
+    ddl = await pg.ddl(['demo.public.orders'])
+    assert 'CREATE TABLE public.orders' in ddl
+    assert '"id" integer DEFAULT nextval' in ddl and 'NOT NULL' in ddl
+    assert 'PRIMARY KEY ("id")' in ddl
+    assert ('CONSTRAINT "fk_orders_user" FOREIGN KEY ("user_id")'
+            ' REFERENCES public.users ("id")') in ddl
+
+
+async def test_ddl_view_uses_viewdef(pg: PgDriver):
+    """视图不合成 CREATE TABLE,走 pg_get_viewdef 输出真实定义。"""
+    ddl = await pg.ddl(['demo.public.v_users'])
+    assert ddl.startswith('CREATE VIEW public.v_users AS')
+    assert 'SELECT id, name FROM public.users' in ddl
+    assert 'CREATE TABLE' not in ddl

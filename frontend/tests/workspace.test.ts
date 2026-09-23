@@ -39,6 +39,15 @@ describe('workspace store', () => {
     vi.useRealTimers()
   })
 
+  it('addTab:表详情(table)页签同样立即落库,type 原样透传', () => {
+    const ws = useWorkspaceStore()
+    const tab = ws.addTab({ type: 'table', connection_id: 'c1', title: 'orders',
+                            context: { table: 'orders', path: 'demo.orders' } })
+    expect(post).toHaveBeenCalledWith('/api/workspace/tabs/save',
+      expect.objectContaining({ id: tab.id, type: 'table',
+                                context: expect.objectContaining({ path: 'demo.orders' }) }))
+  })
+
   it('persistOrder:连续操作合并为一次写入', () => {
     vi.useFakeTimers()
     const ws = useWorkspaceStore()

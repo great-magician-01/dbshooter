@@ -1,7 +1,7 @@
 /** 与后端对应的共享类型。 */
 
 export type DbType = 'sqlite' | 'mysql' | 'pg' | 'redis' | 'mongo'
-export type TabType = 'sql' | 'data' | 'redis' | 'mongo'
+export type TabType = 'sql' | 'data' | 'redis' | 'mongo' | 'table'
 
 export interface Connection {
   id: string
@@ -40,6 +40,30 @@ export interface MetaNode {
 }
 
 export interface Column { name: string; type: string }
+
+/** 表详情-结构页签:单列元数据(对应后端 drivers/base.py ColumnInfo) */
+export interface ColumnInfo {
+  name: string
+  type: string
+  nullable: boolean
+  default: string | null
+  pk: boolean
+  ordinal: number
+  comment: string
+}
+
+/** 表详情-ER 页签:一条外键列对(对应后端 RelationInfo;direction 相对被查询表) */
+export interface TableRelation {
+  name: string
+  direction: 'out' | 'in'
+  schema: string
+  table: string
+  column: string
+  ref_schema: string
+  ref_table: string
+  ref_column: string
+  seq: number
+}
 
 export interface ExecResult {
   kind: 'rows' | 'affected' | 'command' | 'documents' | 'error'

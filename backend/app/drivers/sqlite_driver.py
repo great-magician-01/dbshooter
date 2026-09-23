@@ -7,7 +7,8 @@ from urllib.parse import quote
 
 import aiosqlite
 
-from .base import DriverBase, ExecResult, MetaNode, QueryError, ensure_writable, register
+from .base import (ColumnInfo, DriverBase, ExecResult, MetaNode, QueryError,
+                   RelationInfo, ensure_writable, register)
 from .sqlutil import jsonable, split_sql
 
 
@@ -73,6 +74,76 @@ class SqliteDriver(DriverBase):
 
     async def ai_namespaces(self) -> list[str]:
         return ['main']
+
+    async def table_columns(self, path: str) -> list[ColumnInfo]:
+        await self.connect()
+        assert self.conn is not None
+        table = path.split('.')[-1]
+        # PRAGMA 不支持参数绑定,标识符双引号翻倍防注入(同 metadata())
+        safe = table.replace('"', '""')
+        cols: list[ColumnInfo] = []
+        async with self.conn.execute(f'PRAGMA table_info("{safe}")') as cur:
+            async for cid, name, ctype, notnull, dflt, pk in cur:
+                cols.append(ColumnInfo(name=name, type=ctype or '',
+                                       nullable=not notnull,
+                                       default=None if dflt is None else str(dflt),
+                                       pk=bool(pk), ordinal=cid))
+        return cols
+
+    async def _pk_column(self, table: str) -> str | None:
+        """表的首个主键列(处理 foreign_key_list 省略被引列时 to 为 NULL 的情况)。"""
+        assert self.conn is not None
+        safe = table.replace('"', '""')
+        async with self.conn.execute(f'PRAGMA table_info("{safe}")') as cur:
+            # pk 列返回值是主键内序号(1 起),取序号最小者
+            best: tuple[int, str] | None = None
+            async for _cid, name, _ctype, _notnull, _dflt, pk in cur:
+                if pk and (best is None or pk < best[0]):
+                    best = (pk, name)
+            return best[1] if best else None
+
+    async def table_relations(self, path: str) -> list[RelationInfo]:
+        await self.connect()
+        conn = self.conn
+        assert conn is not None  # 闭包内收窄不传递,捕获局部变量供 fk_rows 使用
+        table = path.split('.')[-1]
+        relations: list[RelationInfo] = []
+
+        async def fk_rows(src: str) -> list[tuple[Any, ...]]:
+            # (id, seq, table, from, to, on_update, on_delete, match)
+            safe = src.replace('"', '""')
+            async with conn.execute(f'PRAGMA foreign_key_list("{safe}")') as cur:
+                return [tuple(r) async for r in cur]
+
+        # 出站:本表引用别人(自引用也在这里记一次,'out')
+        for fid, seq, ref_table, from_col, to_col, *_rest in await fk_rows(table):
+            ref_col = to_col if to_col is not None else await self._pk_column(ref_table)
+            if ref_col is None:
+                continue  # 被引表无主键且省略被引列,无法定位锚点列
+            relations.append(RelationInfo(
+                name=f'fk_{table}_{fid}', direction='out', schema='main',
+                table=table, column=from_col,
+                ref_schema='main', ref_table=ref_table, ref_column=ref_col, seq=seq))
+
+        # 入站:别人引用本表(源表==本表的自引用上面已记,跳过)
+        async with conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+                " AND name NOT LIKE 'sqlite_%'") as cur:
+            others = [r[0] async for r in cur]
+        for src in others:
+            if src == table:
+                continue
+            for fid, seq, ref_table, from_col, to_col, *_rest in await fk_rows(src):
+                if ref_table != table:
+                    continue
+                ref_col = to_col if to_col is not None else await self._pk_column(table)
+                if ref_col is None:
+                    continue
+                relations.append(RelationInfo(
+                    name=f'fk_{src}_{fid}', direction='in', schema='main',
+                    table=src, column=from_col,
+                    ref_schema='main', ref_table=table, ref_column=ref_col, seq=seq))
+        return relations
 
     async def ai_tables(self, namespace: str | None = None) -> list[MetaNode]:
         # SQLite 只有 main 一个命名空间

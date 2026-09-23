@@ -32,6 +32,16 @@ def sqlite_db(tmp_path) -> str:
         CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, city TEXT);
         INSERT INTO users(name, city) VALUES ('张三','上海'),('李四','北京'),('王五','深圳');
         CREATE VIEW v_users AS SELECT name FROM users;
+        -- ER/结构测试:普通 FK(出站 orders→users,入站 users←orders)
+        CREATE TABLE orders(id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id),
+                            amount REAL DEFAULT 0);
+        -- 自引用 FK
+        CREATE TABLE employees(id INTEGER PRIMARY KEY,
+                               manager_id INTEGER REFERENCES employees(id));
+        -- 复合 FK
+        CREATE TABLE parents(a INTEGER, b INTEGER, PRIMARY KEY(a, b));
+        CREATE TABLE children(x INTEGER, y INTEGER,
+                              FOREIGN KEY(x, y) REFERENCES parents(a, b));
     """)
     c.commit()
     c.close()

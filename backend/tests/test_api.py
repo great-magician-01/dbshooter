@@ -217,3 +217,41 @@ def test_ddl_repeated_table_params(client, sqlite_conn_id):
     assert r.status_code == 200 and 'CREATE TABLE' in r.json()['ddl']
     r = client.get(f'/api/connections/{sqlite_conn_id}/ddl?tables=users,v_users')
     assert 'CREATE VIEW' in r.json()['ddl']
+
+
+def test_structure_endpoint(client, sqlite_conn_id):
+    r = client.get(f'/api/connections/{sqlite_conn_id}/structure',
+                   params={'path': 'main.users'})
+    assert r.status_code == 200
+    cols = r.json()['columns']
+    assert [c['name'] for c in cols] == ['id', 'name', 'city']
+    assert cols[0]['pk'] is True and cols[0]['type'] == 'INTEGER'
+    # 视图也有结构
+    r = client.get(f'/api/connections/{sqlite_conn_id}/structure',
+                   params={'path': 'main.v_users'})
+    assert [c['name'] for c in r.json()['columns']] == ['name']
+
+
+def test_relations_endpoint(client, sqlite_conn_id):
+    r = client.get(f'/api/connections/{sqlite_conn_id}/relations',
+                   params={'path': 'main.orders'})
+    assert r.status_code == 200
+    rels = r.json()['relations']
+    assert len(rels) == 1 and rels[0]['direction'] == 'out'
+    assert rels[0]['ref_table'] == 'users' and rels[0]['ref_column'] == 'id'
+    # 入站
+    r = client.get(f'/api/connections/{sqlite_conn_id}/relations',
+                   params={'path': 'main.users'})
+    rels = r.json()['relations']
+    assert len(rels) == 1 and rels[0]['direction'] == 'in' and rels[0]['table'] == 'orders'
+    # 视图无关系
+    r = client.get(f'/api/connections/{sqlite_conn_id}/relations',
+                   params={'path': 'main.v_users'})
+    assert r.json()['relations'] == []
+
+
+def test_structure_relations_missing_connection_404(client):
+    r = client.get('/api/connections/nope/structure', params={'path': 'main.users'})
+    assert r.status_code == 404
+    r = client.get('/api/connections/nope/relations', params={'path': 'main.users'})
+    assert r.status_code == 404

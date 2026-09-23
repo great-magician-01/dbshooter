@@ -102,6 +102,32 @@ async def ddl(cid: str, tables: list[str] = Query([])):
     return {'ddl': text}
 
 
+@router.get('/{cid}/structure')
+async def structure(cid: str, path: str = ''):
+    """表详情-结构页签:列元数据(名称/类型/可空/默认值/主键/注释)。"""
+    try:
+        driver = await manager.get(cid)
+        cols = await driver.table_columns(path)
+        return {'columns': [c.__dict__ for c in cols]}
+    except QueryError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(502, f'结构加载失败: {e}')
+
+
+@router.get('/{cid}/relations')
+async def relations(cid: str, path: str = ''):
+    """表详情-ER 页签:表的双向外键关系(我引用的 + 引用我的)。"""
+    try:
+        driver = await manager.get(cid)
+        rels = await driver.table_relations(path)
+        return {'relations': [r.__dict__ for r in rels]}
+    except QueryError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(502, f'关系加载失败: {e}')
+
+
 @router.get('/{cid}/key')
 async def redis_key_detail(cid: str, key: str, db_index: int = Query(0, alias='db')):
     """Redis 专用:键详情(TYPE/PTTL/按类型取值)。"""

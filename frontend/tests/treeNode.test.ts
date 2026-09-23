@@ -10,6 +10,7 @@ vi.mock('@/api/http', () => ({
 
 import TreeNode from '@/components/TreeNode.vue'
 import { useConnectionsStore } from '@/stores/connections'
+import { useWorkspaceStore } from '@/stores/workspace'
 import type { Connection, MetaNode } from '@/types'
 
 const conn: Connection = {
@@ -62,5 +63,44 @@ describe('TreeNode · 加载失败与缓存失效', () => {
     await conns.remove('c1')
     await flushPromises()
     expect(spy).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('TreeNode · 双击打开表详情', () => {
+  it('双击表节点:打开 table 页签,context 带 table/ref/path/kind', async () => {
+    const ws = useWorkspaceStore()
+    const w = mount(TreeNode, {
+      props: {
+        conn,
+        node: { path: 'demo.orders', label: 'orders', kind: 'table',
+                has_children: true, extra: {} } satisfies MetaNode,
+        depth: 2,
+      },
+    })
+    await w.find('.tn-row').trigger('dblclick')
+    expect(ws.tabs).toHaveLength(1)
+    const tab = ws.tabs[0]
+    expect(tab.type).toBe('table')
+    expect(tab.connection_id).toBe('c1')
+    expect(tab.title).toBe('orders')
+    expect(tab.context.table).toBe('orders')
+    expect(tab.context.path).toBe('demo.orders')
+    expect(tab.context.kind).toBe('table')
+    expect(tab.context.ref).toContain('orders')
+  })
+
+  it('双击带 schema 段的 PG 表:标题带 schema 前缀', async () => {
+    const pgConn: Connection = { ...conn, type: 'pg' }
+    const ws = useWorkspaceStore()
+    const w = mount(TreeNode, {
+      props: {
+        conn: pgConn,
+        node: { path: 'demo.sales.orders', label: 'orders', kind: 'table',
+                has_children: true, extra: {} } satisfies MetaNode,
+        depth: 3,
+      },
+    })
+    await w.find('.tn-row').trigger('dblclick')
+    expect(ws.tabs[0].title).toBe('sales.orders')
   })
 })

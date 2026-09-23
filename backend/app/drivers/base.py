@@ -30,6 +30,32 @@ class MetaNode:
 
 
 @dataclass
+class ColumnInfo:
+    """表/视图的单列元数据(表详情-结构页签)。"""
+    name: str
+    type: str = ''
+    nullable: bool = True
+    default: str | None = None
+    pk: bool = False
+    ordinal: int = 0               # 列序号(sqlite 0 起 cid,mysql/pg 1 起),仅供排序展示
+    comment: str = ''
+
+
+@dataclass
+class RelationInfo:
+    """一条外键列对(表详情-ER 页签);direction 相对被查询的表。"""
+    name: str                      # 约束名(sqlite 无约束名,合成 fk_<表>_<id>)
+    direction: str                 # 'out'=本表引用别人 | 'in'=别人引用本表;自引用记 'out'
+    schema: str                    # FK 侧命名空间(sqlite 恒 'main')
+    table: str                     # FK 侧表
+    column: str                    # FK 侧列
+    ref_schema: str                # 被引侧命名空间
+    ref_table: str
+    ref_column: str
+    seq: int = 0                   # 复合 FK 内的列序号(单列 FK 恒 0)
+
+
+@dataclass
 class ExecResult:
     kind: str = 'rows'             # rows | affected | command | documents
     columns: list[dict[str, Any]] = field(default_factory=list)   # [{name, type}]
@@ -130,6 +156,14 @@ class DriverBase(abc.ABC):
 
     async def ai_tables(self, namespace: str | None = None) -> list[MetaNode]:
         """AI 自助查表:列某命名空间下的表/视图节点(namespace=None 时取默认范围)。"""
+        return []
+
+    async def table_columns(self, path: str) -> list[ColumnInfo]:
+        """表详情-结构页签:表/视图列元数据(SQL 类驱动实现),path 为树节点路径。"""
+        return []
+
+    async def table_relations(self, path: str) -> list[RelationInfo]:
+        """表详情-ER 页签:表的双向外键关系(SQL 类驱动实现);视图/不支持返回 []。"""
         return []
 
     async def cancel(self) -> None:

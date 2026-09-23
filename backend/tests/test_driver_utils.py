@@ -67,3 +67,12 @@ async def test_redis_blocking_commands_rejected():
         await d.execute('BLPOP mykey 0')
     with pytest.raises(QueryError, match='SUBSCRIBE'):
         await d.execute('subscribe ch')
+
+
+async def test_nonsql_drivers_have_empty_structure():
+    """mongo/redis 继承基类默认实现:结构/关系恒空,不建连、不抛错。"""
+    from backend.app.drivers.mongo_driver import MongoDriver
+    from backend.app.drivers.redis_driver import RedisDriver
+    for d in (MongoDriver({'type': 'mongo'}), RedisDriver({'type': 'redis'})):
+        assert await d.table_columns('x.y') == []
+        assert await d.table_relations('x.y') == []

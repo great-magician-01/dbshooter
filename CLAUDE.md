@@ -42,7 +42,7 @@ CI(`.github/workflows/ci.yml`)在 push/PR 时跑 pyright + pytest + vitest + vit
 
 分层:`drivers`(数据库抽象)→ `services`(运行时编排)→ `api`(REST + WS)。入口 `run.py` → `backend.app.main:app`(`create_app()` 工厂)。
 
-- **drivers/** — 可插拔驱动注册表。`base.py` 定义 `DriverBase` / `MetaNode` / `ExecResult` / `QueryError`,驱动用 `@register` 注册、`create_driver(cfg)` 实例化。**新增数据库 = 新建一个 driver 文件 + 在 `drivers/__init__.py` import**。三种操作模型而非一种:`editor_mode` 区分 `sql`(sqlite/mysql/pg)/ `json-query`(mongo)/ `command`(redis),前端据此渲染不同 Tab 面板。SQL 类驱动实现 `ddl()`(REST 取 DDL)+ `ai_namespaces()`/`ai_tables()`(AI 自助查表的命名空间/表枚举,pg 内部拼 current_db 前缀)。
+- **drivers/** — 可插拔驱动注册表。`base.py` 定义 `DriverBase` / `MetaNode` / `ExecResult` / `QueryError`,驱动用 `@register` 注册、`create_driver(cfg)` 实例化。**新增数据库 = 新建一个 driver 文件 + 在 `drivers/__init__.py` import**。三种操作模型而非一种:`editor_mode` 区分 `sql`(sqlite/mysql/pg)/ `json-query`(mongo)/ `command`(redis),前端据此渲染不同 Tab 面板。SQL 类驱动实现 `ddl()`(REST 取 DDL)+ `ai_namespaces()`/`ai_tables()`(AI 自助查表的命名空间/表枚举,pg 内部拼 current_db 前缀)+ `table_columns()`/`table_relations()`(表详情的结构页签列元数据与 ER 页签双向外键;非 SQL 驱动继承默认空实现)。
 - **services/connection_manager.py** — 单例 `manager`,按 conn_id 缓存已连接驱动(带锁防并发重复建连),配置从 `db.get_connection()` 读取。
 - **services/query_service.py** — 查询会话:WS 触发异步执行 → 内存缓冲(`BUFFER_CAP=2000` 行,TTL 600s)→ 前端按 query_id 分页拉取。取消 = 驱动 `cancel()` + 杀任务 + `manager.evict`(断连)。
 - **services/ai_service.py** — Text-to-SQL,仅依赖 OpenAI 兼容 Chat Completions 协议(流式)。SQL 类连接走工具调用循环(`run_agent` + `stream_round`,流式累积 `delta.tool_calls`):模型用 `services/ai_tools.py` 的 `list_tables`/`describe_table` 自助查当前连接结构(PG 感知 schema、裸表名唯一匹配回退)再出 SQL,上限 `MAX_TOOL_ROUNDS=6`,provider 4xx 降级无工具旧路径;工具轨迹经 `ai.tool` 事件推给前端。生成 SQL 进编辑器由用户确认,不直接执行。
@@ -72,7 +72,7 @@ Vue 3 + Pinia + CodeMirror 6。`@` alias 指向 `src/`。
 - **api/http.ts** — axios 封装(统一错误处理 + 可选 token,localStorage `ds-token`)。
 - **api/ws.ts** — 单 WS 连接多路复用客户端:按请求 id 路由事件,断线重连。
 - **stores/** — `connections`(连接列表+树元数据)/ `workspace`(页签,自动持久化到后端 editor_tabs)/ `ai` / `theme`(暗亮双主题)/ `ui`。
-- **components/panes/** — 按 `editor_mode` 三种工作台:`SqlPane` / `MongoPane` / `RedisPane`。图标统一用 `components/icons.ts`(`AppIcon` 组件),不用 emoji/Unicode 字形。
+- **components/panes/** — 按 `editor_mode` 三种工作台:`SqlPane` / `MongoPane` / `RedisPane`;另有 `DataPane`(数据浏览,双击树表节点的旧式页签)与 `TablePane`(表详情:数据/结构/DDL/ER 四子页,ER 为 `ErDiagram.vue` + 纯函数 `utils/erLayout.ts` 自绘 SVG)。图标统一用 `components/icons.ts`(`AppIcon` 组件),不用 emoji/Unicode 字形。
 - **types.ts** — 前后端共享的接口类型定义(与 `backend/app/schemas.py` 对应)。
 
 ## Testing Notes

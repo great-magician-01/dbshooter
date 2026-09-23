@@ -23,6 +23,8 @@ export const ICON_PATHS: Record<string, string> = {
   sql: '<path d="M5.6 4.6L2.6 8l3 3.4M10.4 4.6L13.4 8l-3 3.4"/>',
   redis: '<circle cx="5.2" cy="5.2" r="2.6"/><path d="M7.1 7.1L13 13M10.7 9.7l1.8-1.8M12.3 11.3l1.6-1.6"/>',
   mongo: '<path d="M8 2.6l5.6 2.6L8 7.8 2.4 5.2z"/><path d="M2.4 8.2L8 10.8l5.6-2.6M2.4 11L8 13.6l5.6-2.6"/>',
+  // ER 图(两个实体框 + 一条连线)
+  er: '<path d="M2.2 3.2h5v4h-5zM8.8 8.8h5v4h-5z"/><path d="M4.7 7.2v2.8a1 1 0 0 0 1 1h3.1"/>',
   // 操作
   close: '<path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"/>',
   edit: '<path d="M9.8 3l3.2 3.2-7.4 7.4H2.4v-3.2z"/><path d="M8.4 4.4l3.2 3.2"/>',

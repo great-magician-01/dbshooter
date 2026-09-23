@@ -13,7 +13,8 @@ const props = withDefaults(defineProps<{
   modelValue: string
   lang?: 'sql' | 'json'
   placeholder?: string
-}>(), { lang: 'sql', placeholder: '' })
+  readonly?: boolean
+}>(), { lang: 'sql', placeholder: '', readonly: false })
 
 const emit = defineEmits<{
   'update:modelValue': [string]
@@ -40,6 +41,10 @@ onMounted(() => {
         langExt,
         themeComp.of(buildTheme()),
         EditorView.lineWrapping,
+        // 只读(DDL 展示):静态语义,挂载后不再切换,不必进 Compartment
+        ...(props.readonly
+          ? [EditorState.readOnly.of(true), EditorView.editable.of(false)]
+          : []),
         // Prec.highest:basicSetup 自带的 Mod-Enter(插入空行)先注册会先消费按键
         Prec.highest(keymap.of([
           { key: 'Mod-Enter', run: () => { emit('execute'); return true } },

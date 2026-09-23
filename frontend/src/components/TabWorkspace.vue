@@ -6,6 +6,7 @@ import DataPane from '@/components/panes/DataPane.vue'
 import MongoPane from '@/components/panes/MongoPane.vue'
 import RedisPane from '@/components/panes/RedisPane.vue'
 import SqlPane from '@/components/panes/SqlPane.vue'
+import TablePane from '@/components/panes/TablePane.vue'
 import { useConnectionsStore } from '@/stores/connections'
 import { useWorkspaceStore } from '@/stores/workspace'
 import type { Tab, TabType } from '@/types'
@@ -13,8 +14,10 @@ import type { Tab, TabType } from '@/types'
 const workspace = useWorkspaceStore()
 const conns = useConnectionsStore()
 
-const PANE: Record<TabType, any> = { sql: SqlPane, data: DataPane, redis: RedisPane, mongo: MongoPane }
-const TICON: Record<TabType, string> = { sql: 'sql', data: 'table', redis: 'redis', mongo: 'mongo' }
+const PANE: Record<TabType, any> = { sql: SqlPane, data: DataPane, redis: RedisPane,
+                                     mongo: MongoPane, table: TablePane }
+const TICON: Record<TabType, string> = { sql: 'sql', data: 'table', redis: 'redis',
+                                         mongo: 'mongo', table: 'table' }
 
 function subOf(tab: Tab): string {
   if (tab.connection_id) {

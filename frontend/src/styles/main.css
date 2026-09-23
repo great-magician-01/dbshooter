@@ -167,6 +167,27 @@ table.grid td.rn { color:var(--muted); background:var(--panel); text-align:right
 pre.plan, pre.log { padding:14px 16px; font:12px/1.6 var(--mono); color:var(--text2) }
 pre.log .ok { color:var(--green) } pre.log .err { color:var(--red) }
 
+/* ── 表详情页签(TablePane) ── */
+/* 嵌套 pane(DataPane/ErDiagram 根是 absolute inset:0 的 .pane)的相对定位锚点 */
+.tp-sub { flex:1; min-height:0; position:relative }
+
+/* ── ER 图(ErDiagram,自绘 SVG) ── */
+.er-toolbar { flex:none; display:flex; align-items:center; gap:6px; padding:6px 10px;
+              border-bottom:1px solid var(--border-soft) }
+.er-edge { fill:none; stroke:var(--muted); stroke-width:1.4 }
+.er-edge:hover { stroke:var(--accent) }
+.er-edge-label { font:9.5px var(--mono); fill:var(--muted); text-anchor:middle }
+.er-card { fill:var(--panel2); stroke:var(--border) }
+.er-node.center .er-card { stroke:var(--accent); stroke-width:1.6 }
+.er-node.clickable { cursor:pointer }
+.er-node.clickable:hover .er-card { stroke:var(--accent) }
+.er-header { fill:var(--accent-dim) }
+.er-title { font:600 12px var(--mono); fill:var(--text) }
+.er-col { font:11px var(--mono); fill:var(--text2) }
+.er-col.pk { fill:var(--text); font-weight:600 }
+.er-pk-ico { fill:none; stroke:var(--amber); stroke-width:1.6;
+             stroke-linecap:round; stroke-linejoin:round }
+
 /* ── Redis 面板 ── */
 .redis-body { flex:1; display:flex; min-height:0 }
 .rkey-list { width:300px; flex:none; border-right:1px solid var(--border); display:flex;

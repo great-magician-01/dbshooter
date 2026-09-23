@@ -6,7 +6,8 @@ from typing import Any, cast
 
 import asyncpg
 
-from .base import DriverBase, ExecResult, MetaNode, QueryError, ensure_writable, register
+from .base import (ColumnInfo, DriverBase, ExecResult, MetaNode, QueryError,
+                   RelationInfo, ensure_writable, register)
 from .sqlutil import jsonable, split_sql
 
 # 常见类型 OID → 名称
@@ -103,24 +104,131 @@ class PgDriver(DriverBase):
         return await self.metadata(f'{self.current_db}.{namespace or "public"}')
 
     async def ddl(self, tables: list[str]) -> str:
-        """PG 无 SHOW CREATE,按 information_schema 合成简化 DDL(供 AI 上下文)。"""
+        """PG 无 SHOW CREATE,按 table_columns()/table_relations() 合成 DDL
+        (含 NOT NULL/DEFAULT/PRIMARY KEY/FOREIGN KEY,供 AI 上下文与 DDL 页签);
+        视图走 pg_get_viewdef 输出真实定义。"""
         await self.connect()
         assert self.pool is not None
         out = []
-        async with self.pool.acquire() as conn:
-            for t in tables:
-                parts = t.split('.')
-                schema, table = (parts[-2], parts[-1]) if len(parts) >= 2 else ('public', parts[-1])
-                rows = await conn.fetch(
-                    'SELECT column_name, data_type, is_nullable FROM information_schema.columns'
-                    ' WHERE table_schema=$1 AND table_name=$2 ORDER BY ordinal_position',
-                    schema, table)
-                if rows:
-                    cols = ',\n  '.join(
-                        f'"{r["column_name"]}" {r["data_type"]}'
-                        + ('' if r['is_nullable'] == 'YES' else ' NOT NULL') for r in rows)
-                    out.append(f'CREATE TABLE {schema}.{table} (\n  {cols}\n);')
+        for t in tables:
+            parts = t.split('.')
+            schema, table = (parts[-2], parts[-1]) if len(parts) >= 2 else ('public', parts[-1])
+            async with self.pool.acquire() as conn:
+                relkind = await conn.fetchval(
+                    'SELECT c.relkind FROM pg_class c'
+                    ' JOIN pg_namespace n ON n.oid = c.relnamespace'
+                    ' WHERE n.nspname=$1 AND c.relname=$2', schema, table)
+                if relkind == 'v':
+                    # format('%I.%I') 负责标识符引号,避免手工拼接注入
+                    vdef = await conn.fetchval(
+                        "SELECT pg_get_viewdef(format('%I.%I', $1, $2)::regclass, true)",
+                        schema, table)
+                    if vdef:
+                        out.append(f'CREATE VIEW {schema}.{table} AS\n{vdef}')
+                    continue
+            if relkind is None:
+                continue
+            cols = await self.table_columns(t)
+            if not cols:
+                continue
+            lines = []
+            for c in cols:
+                line = f'  "{c.name}" {c.type}'
+                if c.default is not None:
+                    line += f' DEFAULT {c.default}'
+                if not c.nullable:
+                    line += ' NOT NULL'
+                lines.append(line)
+            pk_cols = [c for c in cols if c.pk]
+            if pk_cols:
+                lines.append('  PRIMARY KEY ('
+                             + ', '.join(f'"{c.name}"' for c in pk_cols) + ')')
+            # 出站外键(复合 FK 按约束名分组、seq 排序后拼列对)
+            by_name: dict[str, list[RelationInfo]] = {}
+            for r in await self.table_relations(t):
+                if r.direction == 'out':
+                    by_name.setdefault(r.name, []).append(r)
+            for name, rs in by_name.items():
+                rs.sort(key=lambda r: r.seq)
+                src = ', '.join(f'"{r.column}"' for r in rs)
+                ref = rs[0]
+                dst = ', '.join(f'"{r.ref_column}"' for r in rs)
+                lines.append(f'  CONSTRAINT "{name}" FOREIGN KEY ({src})'
+                             f' REFERENCES {ref.ref_schema}.{ref.ref_table} ({dst})')
+            out.append(f'CREATE TABLE {schema}.{table} (\n' + ',\n'.join(lines) + '\n);')
         return '\n\n'.join(out)
+
+    async def table_columns(self, path: str) -> list[ColumnInfo]:
+        await self.connect()
+        assert self.pool is not None
+        parts = path.split('.')
+        schema, table = (parts[-2], parts[-1]) if len(parts) >= 2 else ('public', parts[-1])
+        async with self.pool.acquire() as conn:
+            # pg_attribute + format_type:varchar(64) 全型(psql \d 同款),视图列同样覆盖
+            rows = await conn.fetch(
+                'SELECT a.attname AS name,'
+                ' pg_catalog.format_type(a.atttypid, a.atttypmod) AS type,'
+                ' NOT a.attnotnull AS nullable,'
+                ' pg_get_expr(d.adbin, d.adrelid) AS "default",'
+                ' a.attnum AS ordinal,'
+                ' col_description(a.attrelid, a.attnum) AS comment'
+                ' FROM pg_attribute a'
+                ' JOIN pg_class c ON c.oid = a.attrelid'
+                ' JOIN pg_namespace n ON n.oid = c.relnamespace'
+                ' LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum'
+                ' WHERE n.nspname=$1 AND c.relname=$2'
+                ' AND a.attnum > 0 AND NOT a.attisdropped'
+                ' ORDER BY a.attnum', schema, table)
+            pk_rows = await conn.fetch(
+                'SELECT a.attname FROM pg_index i'
+                ' JOIN pg_class c ON c.oid = i.indrelid'
+                ' JOIN pg_namespace n ON n.oid = c.relnamespace'
+                ' JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)'
+                ' WHERE i.indisprimary AND n.nspname=$1 AND c.relname=$2', schema, table)
+        pk_set = {r['attname'] for r in pk_rows}
+        return [ColumnInfo(name=r['name'], type=r['type'], nullable=r['nullable'],
+                           default=r['default'], pk=r['name'] in pk_set,
+                           ordinal=r['ordinal'], comment=r['comment'] or '')
+                for r in rows]
+
+    async def table_relations(self, path: str) -> list[RelationInfo]:
+        await self.connect()
+        assert self.pool is not None
+        parts = path.split('.')
+        schema, table = (parts[-2], parts[-1]) if len(parts) >= 2 else ('public', parts[-1])
+        async with self.pool.acquire() as conn:
+            # unnest(conkey, confkey) WITH ORDINALITY:复合 FK 按位置配对列;
+            # 双向过滤(我引用的 + 引用我的),跨 schema FK 由两侧 nspname 承载
+            rows = await conn.fetch(
+                'SELECT con.conname AS name,'
+                ' src_ns.nspname AS src_schema, src.relname AS src_table,'
+                ' sa.attname AS src_column,'
+                ' dst_ns.nspname AS ref_schema, dst.relname AS ref_table,'
+                ' da.attname AS ref_column, ord.n AS seq'
+                ' FROM pg_constraint con'
+                ' JOIN pg_class src ON src.oid = con.conrelid'
+                ' JOIN pg_namespace src_ns ON src_ns.oid = src.relnamespace'
+                ' JOIN pg_class dst ON dst.oid = con.confrelid'
+                ' JOIN pg_namespace dst_ns ON dst_ns.oid = dst.relnamespace'
+                ' JOIN unnest(con.conkey, con.confkey) WITH ORDINALITY AS ord(ck, dk, n)'
+                '  ON TRUE'
+                ' JOIN pg_attribute sa ON sa.attrelid = con.conrelid AND sa.attnum = ord.ck'
+                ' JOIN pg_attribute da ON da.attrelid = con.confrelid AND da.attnum = ord.dk'
+                " WHERE con.contype = 'f'"
+                ' AND ((src_ns.nspname=$1 AND src.relname=$2)'
+                '  OR (dst_ns.nspname=$1 AND dst.relname=$2))'
+                ' ORDER BY con.conname, ord.n', schema, table)
+        rels: list[RelationInfo] = []
+        for r in rows:
+            # 自引用行同时命中两侧条件,先判 'out',天然只记一次
+            direction = ('out' if r['src_schema'] == schema and r['src_table'] == table
+                         else 'in')
+            rels.append(RelationInfo(
+                name=r['name'], direction=direction,
+                schema=r['src_schema'], table=r['src_table'], column=r['src_column'],
+                ref_schema=r['ref_schema'], ref_table=r['ref_table'],
+                ref_column=r['ref_column'], seq=r['seq'] - 1))  # PG 序号 1 起,归一为 0 起
+        return rels
 
     async def execute(self, stmt: str, limit: int = 500,
                       schema: str | None = None) -> list[ExecResult]:
