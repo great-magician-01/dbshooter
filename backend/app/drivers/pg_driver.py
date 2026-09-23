@@ -105,8 +105,8 @@ class PgDriver(DriverBase):
 
     async def ddl(self, tables: list[str]) -> str:
         """PG 无 SHOW CREATE,按 table_columns()/table_relations() 合成 DDL
-        (含 NOT NULL/DEFAULT/PRIMARY KEY/FOREIGN KEY,供 AI 上下文与 DDL 页签);
-        视图走 pg_get_viewdef 输出真实定义。"""
+        (含 NOT NULL/DEFAULT/主键生成列/identity/PRIMARY KEY/FOREIGN KEY,
+        供 AI 上下文与 DDL 页签);视图/物化视图走 pg_get_viewdef 输出真实定义。"""
         await self.connect()
         assert self.pool is not None
         out = []
@@ -118,28 +118,43 @@ class PgDriver(DriverBase):
                     'SELECT c.relkind FROM pg_class c'
                     ' JOIN pg_namespace n ON n.oid = c.relnamespace'
                     ' WHERE n.nspname=$1 AND c.relname=$2', schema, table)
-                if relkind == 'v':
+                if relkind is None:
+                    continue  # 对象不存在
+                if relkind in ('v', 'm'):
                     # format('%I.%I') 负责标识符引号,避免手工拼接注入
                     vdef = await conn.fetchval(
                         "SELECT pg_get_viewdef(format('%I.%I', $1, $2)::regclass, true)",
                         schema, table)
                     if vdef:
-                        out.append(f'CREATE VIEW {schema}.{table} AS\n{vdef}')
+                        kind = 'MATERIALIZED VIEW' if relkind == 'm' else 'VIEW'
+                        out.append(f'CREATE {kind} {schema}.{table} AS\n{vdef}')
                     continue
-            if relkind is None:
+            if relkind not in ('r', 'p', 'f'):
+                continue  # sequence / composite type / index 等:不合成 CREATE TABLE
+            try:
+                cols = await self.table_columns(t)
+            except QueryError:
                 continue
-            cols = await self.table_columns(t)
             if not cols:
                 continue
             lines = []
             for c in cols:
                 line = f'  "{c.name}" {c.type}'
-                if c.default is not None:
+                # identity / 存储生成列不能写成 DEFAULT(前者丢特性、后者重跑报错:
+                # DEFAULT 表达式里不允许引用其它列)
+                if c.identity in ('a', 'd'):
+                    line += (' GENERATED '
+                             + ('ALWAYS' if c.identity == 'a' else 'BY DEFAULT')
+                             + ' AS IDENTITY')
+                elif c.generated == 's' and c.default is not None:
+                    line += f' GENERATED ALWAYS AS ({c.default}) STORED'
+                elif c.default is not None:
                     line += f' DEFAULT {c.default}'
                 if not c.nullable:
                     line += ' NOT NULL'
                 lines.append(line)
-            pk_cols = [c for c in cols if c.pk]
+            # pk 即主键内序号,排序后输出索引列序(而非列定义顺序)
+            pk_cols = sorted((c for c in cols if c.pk), key=lambda c: c.pk)
             if pk_cols:
                 lines.append('  PRIMARY KEY ('
                              + ', '.join(f'"{c.name}"' for c in pk_cols) + ')')
@@ -164,31 +179,43 @@ class PgDriver(DriverBase):
         parts = path.split('.')
         schema, table = (parts[-2], parts[-1]) if len(parts) >= 2 else ('public', parts[-1])
         async with self.pool.acquire() as conn:
-            # pg_attribute + format_type:varchar(64) 全型(psql \d 同款),视图列同样覆盖
+            # pg_attribute + format_type:varchar(64) 全型(psql \d 同款);
+            # relkind 过滤挡住 sequence/composite type(AI 工具可传裸名,否则会
+            # 把序列的 last_value 等属性当成表列)
             rows = await conn.fetch(
                 'SELECT a.attname AS name,'
                 ' pg_catalog.format_type(a.atttypid, a.atttypmod) AS type,'
                 ' NOT a.attnotnull AS nullable,'
                 ' pg_get_expr(d.adbin, d.adrelid) AS "default",'
                 ' a.attnum AS ordinal,'
-                ' col_description(a.attrelid, a.attnum) AS comment'
+                ' col_description(a.attrelid, a.attnum) AS comment,'
+                ' a.attgenerated AS generated,'
+                ' a.attidentity AS identity'
                 ' FROM pg_attribute a'
                 ' JOIN pg_class c ON c.oid = a.attrelid'
                 ' JOIN pg_namespace n ON n.oid = c.relnamespace'
                 ' LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum'
                 ' WHERE n.nspname=$1 AND c.relname=$2'
                 ' AND a.attnum > 0 AND NOT a.attisdropped'
+                " AND c.relkind IN ('r','p','v','m','f')"
                 ' ORDER BY a.attnum', schema, table)
+            if not rows:
+                raise QueryError(f'表不存在: {schema}.{table}')
+            # PK 列序按索引内顺序(array_position),不是列定义顺序:
+            # PRIMARY KEY (b, a) 必须原样输出,否则合成 DDL 与真实结构不符
             pk_rows = await conn.fetch(
                 'SELECT a.attname FROM pg_index i'
                 ' JOIN pg_class c ON c.oid = i.indrelid'
                 ' JOIN pg_namespace n ON n.oid = c.relnamespace'
                 ' JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)'
-                ' WHERE i.indisprimary AND n.nspname=$1 AND c.relname=$2', schema, table)
-        pk_set = {r['attname'] for r in pk_rows}
+                ' WHERE i.indisprimary AND n.nspname=$1 AND c.relname=$2'
+                ' ORDER BY array_position(i.indkey, a.attnum)', schema, table)
+        pk_pos = {r['attname']: i + 1 for i, r in enumerate(pk_rows)}
         return [ColumnInfo(name=r['name'], type=r['type'], nullable=r['nullable'],
-                           default=r['default'], pk=r['name'] in pk_set,
-                           ordinal=r['ordinal'], comment=r['comment'] or '')
+                           default=r['default'], pk=pk_pos.get(r['name'], 0),
+                           ordinal=r['ordinal'], comment=r['comment'] or '',
+                           generated=r['generated'] or '',
+                           identity=r['identity'] or '')
                 for r in rows]
 
     async def table_relations(self, path: str) -> list[RelationInfo]:
@@ -215,6 +242,9 @@ class PgDriver(DriverBase):
                 ' JOIN pg_attribute sa ON sa.attrelid = con.conrelid AND sa.attnum = ord.ck'
                 ' JOIN pg_attribute da ON da.attrelid = con.confrelid AND da.attnum = ord.dk'
                 " WHERE con.contype = 'f'"
+                # conparentid=0:分区表的 FK 会被 PG 克隆到每个分区,不带这个过滤
+                # 会让被引表按分区数收到重复的入站关系
+                ' AND con.conparentid = 0'
                 ' AND ((src_ns.nspname=$1 AND src.relname=$2)'
                 '  OR (dst_ns.nspname=$1 AND dst.relname=$2))'
                 ' ORDER BY con.conname, ord.n', schema, table)

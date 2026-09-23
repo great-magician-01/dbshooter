@@ -8,12 +8,15 @@ import pytest
 
 from backend.app.drivers.mysql_driver import MysqlDriver
 
-# information_schema.COLUMNS 罐装行(按驱动 SELECT 列序)
+# information_schema.COLUMNS 罐装行(按驱动 SELECT 列序,不再取 COLUMN_KEY)
 _COLUMN_ROWS = [
-    ('id', 'int', 'NO', None, 'PRI', 1, ''),
-    ('name', 'varchar(64)', 'YES', None, '', 2, '姓名'),
-    ('amount', 'decimal(10,2)', 'YES', '0.00', '', 3, ''),
+    ('id', 'int', 'NO', None, 1, ''),
+    ('name', 'varchar(64)', 'YES', None, 2, '姓名'),
+    ('amount', 'decimal(10,2)', 'YES', '0.00', 3, ''),
 ]
+
+# KEY_COLUMN_USAGE(PRIMARY)罐装行:主键列序
+_PK_ROWS = [('id', 1)]
 
 # information_schema.KEY_COLUMN_USAGE 罐装行(ORDINAL_POSITION 1 起)
 _FK_ROWS = [
@@ -42,9 +45,15 @@ class _Cursor:
     async def execute(self, sql: str, args: tuple[Any, ...] | None = None) -> None:
         self.conn.log.append((sql, args))
         if 'information_schema.COLUMNS' in sql:
-            self._rows = list(_COLUMN_ROWS)
+            # 按 (db, table) 过滤:不存在的表必须空结果(驱动据此抛 QueryError)
+            self._rows = list(_COLUMN_ROWS) if args == ('shop', 'users') else []
         elif 'information_schema.KEY_COLUMN_USAGE' in sql and args:
-            # 复刻 WHERE:双侧 (db, table) 过滤 + 约束名/序号排序
+            # PRIMARY 列序查询
+            if "CONSTRAINT_NAME='PRIMARY'" in sql:
+                self._rows = _PK_ROWS if (args[0], args[1]) == ('shop', 'users') else []
+                return
+            # 复刻 WHERE:双侧 (db, table) 过滤 + 约束名/序号排序。
+            # 参数顺序错了(direction 侧与被引侧调包)会筛出不同行,测试随即失败。
             db, table, ref_db, ref_table = args
             rows = [r for r in _FK_ROWS
                     if (r[1], r[2]) == (db, table) or (r[4], r[5]) == (ref_db, ref_table)]
@@ -99,15 +108,25 @@ def _log(mysql: MysqlDriver) -> list[tuple[str, tuple[Any, ...] | None]]:
 
 
 async def test_table_columns(mysql: MysqlDriver):
-    """结构页签:COLUMN_TYPE 全型/可空/默认值/注释;pk=COLUMN_KEY='PRI'。"""
+    """结构页签:COLUMN_TYPE 全型/可空/默认值/注释;pk 取自主键列序查询。"""
     cols = await mysql.table_columns('shop.users')
     assert [c.name for c in cols] == ['id', 'name', 'amount']
     id_col, name_col, amount_col = cols
-    assert id_col.pk is True and id_col.nullable is False and id_col.ordinal == 1
+    assert id_col.pk == 1 and id_col.nullable is False and id_col.ordinal == 1
     assert name_col.type == 'varchar(64)' and name_col.comment == '姓名'
-    assert amount_col.default == '0.00' and amount_col.pk is False
+    assert amount_col.default == '0.00' and amount_col.pk == 0
     sql, args = _log(mysql)[0]
     assert 'COLUMN_COMMENT' in sql and args == ('shop', 'users')
+    # 主键列序单独查 KEY_COLUMN_USAGE(COLUMN_KEY 不带约束内序号)
+    pk_sql, pk_args = _log(mysql)[1]
+    assert "CONSTRAINT_NAME='PRIMARY'" in pk_sql and pk_args == ('shop', 'users')
+
+
+async def test_table_columns_missing_raises(mysql: MysqlDriver):
+    """表不存在 → QueryError(路由 404),而不是 200 + 空列。"""
+    from backend.app.drivers.base import QueryError
+    with pytest.raises(QueryError):
+        await mysql.table_columns('shop.no_such')
 
 
 async def test_table_relations_bidirectional(mysql: MysqlDriver):
@@ -121,6 +140,21 @@ async def test_table_relations_bidirectional(mysql: MysqlDriver):
     sql, args = _log(mysql)[0]
     assert 'TABLE_NAME' in sql and 'REFERENCED_TABLE_NAME' in sql
     assert args == ('shop', 'users', 'shop', 'users')
+
+
+async def test_table_relations_cross_db_arg_pairs(mysql: MysqlDriver):
+    """跨库出站:两个 (db, table) 参数对不同,调包就会筛错行。
+
+    fake 按驱动自己的参数口径复刻 WHERE,所以 (other,t1)↔(shop,users)
+    这两对若被交换,结果就不再是 other.t1 上的出站关系。
+    """
+    rels = await mysql.table_relations('other.t1')
+    assert len(rels) == 1
+    rel = rels[0]
+    assert rel.direction == 'out' and rel.schema == 'other' and rel.table == 't1'
+    assert rel.column == 'uid' and rel.ref_table == 'users'
+    _, args = _log(mysql)[0]
+    assert args == ('other', 't1', 'other', 't1')
 
 
 async def test_table_relations_self_reference(mysql: MysqlDriver):

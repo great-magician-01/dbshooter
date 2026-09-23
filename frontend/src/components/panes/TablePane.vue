@@ -33,24 +33,31 @@ const columns = ref<ColumnInfo[]>([])
 const ddl = ref('')
 const structError = ref('')
 const ddlError = ref('')
-const loading = ref(true)
+// 结构与 DDL 各自独立:pg 的 DDL 合成要多次查目录,慢了不该拖住结构页
+const structLoading = ref(true)
+const ddlLoading = ref(true)
 
 async function loadMeta() {
   const cid = props.tab.connection_id
   const path = (props.tab.context.path as string) || ''
-  if (!cid || !path) { structError.value = '页签缺少表路径'; loading.value = false; return }
-  loading.value = true
-  // 结构与 DDL 各自独立报错,互不阻塞
+  if (!cid || !path) {
+    structError.value = ddlError.value = '页签缺少表路径'
+    structLoading.value = ddlLoading.value = false
+    return
+  }
+  structLoading.value = ddlLoading.value = true
+  // 两个请求各自报错,互不阻塞
   await Promise.all([
     get<{ columns: ColumnInfo[] }>(`/api/connections/${cid}/structure`, { path })
       .then(r => { columns.value = r.columns })
-      .catch((e: any) => { structError.value = e.message }),
+      .catch((e: any) => { structError.value = e.message })
+      .finally(() => { structLoading.value = false }),
     // 标量传参:axios 数组会序列化成 tables[]=x,FastAPI list Query 收不到
     get<{ ddl: string }>(`/api/connections/${cid}/ddl`, { tables: path })
       .then(r => { ddl.value = r.ddl })
-      .catch((e: any) => { ddlError.value = e.message }),
+      .catch((e: any) => { ddlError.value = e.message })
+      .finally(() => { ddlLoading.value = false }),
   ])
-  loading.value = false
 }
 
 onMounted(loadMeta)
@@ -75,7 +82,7 @@ onMounted(loadMeta)
     <div v-if="touched.has('structure')" v-show="sub === 'structure'" class="result-body">
       <div v-if="structError" class="result-placeholder" style="color:var(--red)">
         {{ structError }}</div>
-      <div v-else-if="loading" class="result-placeholder">加载中…</div>
+      <div v-else-if="structLoading" class="result-placeholder">加载中…</div>
       <div v-else-if="!columns.length" class="result-placeholder">没有列元数据</div>
       <div v-else class="grid-scroll">
         <table class="grid">
@@ -88,7 +95,7 @@ onMounted(loadMeta)
               <td class="rn">{{ i + 1 }}</td>
               <td>{{ c.name }}</td>
               <td style="color:var(--text2)">{{ c.type }}</td>
-              <td><AppIcon v-if="c.pk" name="pk" :size="12" /></td>
+              <td><AppIcon v-if="c.pk > 0" name="pk" :size="12" /></td>
               <td>{{ c.nullable ? 'YES' : 'NO' }}</td>
               <td><span v-if="c.default === null" class="null">NULL</span>
                 <template v-else>{{ c.default }}</template></td>
@@ -103,7 +110,7 @@ onMounted(loadMeta)
     <div v-if="touched.has('ddl')" v-show="sub === 'ddl'" class="result-body"
          style="display:flex;flex-direction:column;overflow:hidden">
       <div v-if="ddlError" class="result-placeholder" style="color:var(--red)">{{ ddlError }}</div>
-      <div v-else-if="loading" class="result-placeholder">加载中…</div>
+      <div v-else-if="ddlLoading" class="result-placeholder">加载中…</div>
       <div v-else-if="!ddl" class="result-placeholder">该对象没有 DDL</div>
       <CodeEditor v-else :model-value="ddl" lang="sql" readonly />
     </div>

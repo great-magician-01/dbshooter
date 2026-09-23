@@ -36,9 +36,11 @@ class ColumnInfo:
     type: str = ''
     nullable: bool = True
     default: str | None = None
-    pk: bool = False
+    pk: int = 0                   # 0=非主键;1..n=主键内序号(1 起,复合主键按索引列序)
     ordinal: int = 0               # 列序号(sqlite 0 起 cid,mysql/pg 1 起),仅供排序展示
     comment: str = ''
+    generated: str = ''            # pg:'' | 's'(存储生成列,default 为其生成表达式)
+    identity: str = ''             # pg:'' | 'a'(GENERATED ALWAYS) | 'd'(BY DEFAULT)
 
 
 @dataclass

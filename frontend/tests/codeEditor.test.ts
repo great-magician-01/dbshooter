@@ -1,5 +1,5 @@
 /** 组件级:编辑器快捷键 —— Ctrl/Cmd+Enter 触发执行,而不是 basicSetup 默认的"插入空行"。 */
-import { enableAutoUnmount, mount, type VueWrapper } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
@@ -38,5 +38,24 @@ describe('CodeEditor', () => {
     const w = mount(CodeEditor, { props: { modelValue: 'SELECT 1' } })
     pressEnter(w, {})
     expect(w.emitted('execute')).toBeUndefined()
+  })
+
+  it('readonly:编辑器不可编辑,但外部 modelValue 变化仍能写入', async () => {
+    const w = mount(CodeEditor, { props: { modelValue: 'CREATE TABLE t (a int)', readonly: true } })
+    // 走 DOM 侧断言:EditorView.editable.of(false) → contenteditable=false
+    const content = w.find('.cm-content').element as HTMLElement
+    expect(content.getAttribute('contenteditable')).toBe('false')
+    // 只读态下 typing 不产生任何改动
+    pressEnter(w, {})
+    expect(w.emitted('execute')).toBeUndefined()
+    // 外部换文档仍生效(DDL 异步到账后要能显示)
+    await w.setProps({ modelValue: 'CREATE TABLE t2 (b int)' })
+    await flushPromises()
+    expect(w.find('.cm-content').element.textContent).toContain('CREATE TABLE t2')
+  })
+
+  it('非 readonly:默认 contenteditable=true', () => {
+    const w = mount(CodeEditor, { props: { modelValue: 'SELECT 1' } })
+    expect(w.find('.cm-content').element.getAttribute('contenteditable')).toBe('true')
   })
 })

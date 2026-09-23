@@ -91,21 +91,38 @@ async def test_ddl(sqlite_db):
 
 
 async def test_table_columns(sqlite_db):
-    """结构页签:列名/类型/主键/可空/默认值/序号(PRAGMA 实际值口径)。"""
+    """结构页签:列名/类型/主键序号/可空/默认值/序号(PRAGMA 实际值口径)。"""
     d = make(sqlite_db)
     cols = await d.table_columns('main.users')
     assert [c.name for c in cols] == ['id', 'name', 'city']
     id_col = cols[0]
-    assert id_col.type == 'INTEGER' and id_col.pk is True and id_col.ordinal == 0
+    assert id_col.type == 'INTEGER' and id_col.pk == 1 and id_col.ordinal == 0
     # INTEGER PRIMARY KEY 是 rowid 别名,未显式 NOT NULL 时 pragma 报 notnull=0
     assert id_col.nullable is True and id_col.default is None
 
     order_cols = {c.name: c for c in await d.table_columns('main.orders')}
     assert order_cols['amount'].default == '0'
-    assert order_cols['user_id'].pk is False
+    assert order_cols['user_id'].pk == 0
     # 视图也有列
     view_cols = await d.table_columns('main.v_users')
     assert [c.name for c in view_cols] == ['name']
+    await d.close()
+
+
+async def test_table_columns_composite_pk_positions(sqlite_db):
+    """复合主键:pk 是主键内序号(1 起),不是布尔。"""
+    d = make(sqlite_db)
+    cols = {c.name: c for c in await d.table_columns('main.parents')}
+    assert cols['a'].pk == 1 and cols['b'].pk == 2
+    await d.close()
+
+
+async def test_table_columns_missing_raises(sqlite_db):
+    """表不存在时抛 QueryError(路由映射 404),而不是 200 + 空列。"""
+    from backend.app.drivers import QueryError
+    d = make(sqlite_db)
+    with pytest.raises(QueryError):
+        await d.table_columns('main.no_such_table')
     await d.close()
 
 
@@ -148,10 +165,39 @@ async def test_table_relations_composite_fk(sqlite_db):
     assert by_seq[1].column == 'y' and by_seq[1].ref_column == 'b'
 
     parent_rels = await d.table_relations('main.parents')
-    assert len(parent_rels) == 2
-    assert all(r.direction == 'in' and r.table == 'children' for r in parent_rels)
+    # children(显式复合 FK)与 c2(隐式复合 FK)各贡献两条入站
+    from_children = [r for r in parent_rels if r.table == 'children']
+    assert len(parent_rels) == 4 and len(from_children) == 2
+    assert all(r.direction == 'in' for r in parent_rels)
     # 视图无关系
     assert await d.table_relations('main.v_users') == []
+    await d.close()
+
+
+async def test_table_relations_composite_pk_implicit(sqlite_db):
+    """复合主键被隐式引用:每行 to 都是 NULL,必须按 seq 对应主键列。
+
+    foreign_key_list(c2) 两行的 to 均为 NULL,只取首个主键列会让 x、y
+    都锚到 a 上(ER 图画错)。
+    """
+    d = make(sqlite_db)
+    rels = await d.table_relations('main.c2')
+    assert len(rels) == 2
+    by_col = {r.column: r for r in rels}
+    assert by_col['x'].ref_column == 'a' and by_col['x'].seq == 0
+    assert by_col['y'].ref_column == 'b' and by_col['y'].seq == 1
+    # 被引侧对称:parents 收到两条入站,列对被引到 a/b
+    in_rels = await d.table_relations('main.parents')
+    in_c2 = [r for r in in_rels if r.table == 'c2']
+    assert {r.column: r.ref_column for r in in_c2} == {'x': 'a', 'y': 'b'}
+    await d.close()
+
+
+async def test_table_relations_skips_unresolvable(sqlite_db):
+    """被引表无主键且省略被引列:跳过该关系而不是报错或锚错列。"""
+    d = make(sqlite_db)
+    assert await d.table_relations('main.ref_nopk') == []
+    assert await d.table_relations('main.nopk') == []
     await d.close()
 
 
@@ -165,6 +211,17 @@ async def test_table_relations_implicit_pk_column(sqlite_db):
     rels = await d.table_relations('main.logs')
     assert len(rels) == 1
     assert rels[0].ref_table == 'users' and rels[0].ref_column == 'id'
+    await d.close()
+
+
+async def test_table_relations_incoming_prefilter(sqlite_db):
+    """入站扫描靠 sql LIKE '%REFERENCES%' 预筛:无 FK 的表不会漏报也不会误报。"""
+    d = make(sqlite_db)
+    # orders 只有出站(引用 users),没有入站(没人引用 orders)
+    assert [r for r in await d.table_relations('main.orders') if r.direction == 'in'] == []
+    # users 仍能收到 orders 的入站(预筛没把它筛掉)
+    users_in = await d.table_relations('main.users')
+    assert [r.table for r in users_in] == ['orders']
     await d.close()
 
 

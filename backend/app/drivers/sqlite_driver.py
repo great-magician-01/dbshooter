@@ -87,20 +87,32 @@ class SqliteDriver(DriverBase):
                 cols.append(ColumnInfo(name=name, type=ctype or '',
                                        nullable=not notnull,
                                        default=None if dflt is None else str(dflt),
-                                       pk=bool(pk), ordinal=cid))
+                                       pk=pk, ordinal=cid))
+        if not cols:
+            raise QueryError(f'表不存在: {table}')
         return cols
 
-    async def _pk_column(self, table: str) -> str | None:
-        """表的首个主键列(处理 foreign_key_list 省略被引列时 to 为 NULL 的情况)。"""
+    async def _pk_columns(self, table: str) -> list[str]:
+        """表的有序主键列(foreign_key_list 省略被引列时 to 为 NULL 的回退)。
+
+        复合主键被隐式引用(FOREIGN KEY(x,y) REFERENCES parents,未写被引列)时,
+        PRAGMA foreign_key_list 每一行的 to 都是 NULL,必须按 seq 对应主键的
+        第 seq 列 —— 只取首列会让复合 FK 的所有列都锚到同一列上。
+        """
         assert self.conn is not None
         safe = table.replace('"', '""')
         async with self.conn.execute(f'PRAGMA table_info("{safe}")') as cur:
-            # pk 列返回值是主键内序号(1 起),取序号最小者
-            best: tuple[int, str] | None = None
-            async for _cid, name, _ctype, _notnull, _dflt, pk in cur:
-                if pk and (best is None or pk < best[0]):
-                    best = (pk, name)
-            return best[1] if best else None
+            # pk 列返回值是主键内序号(1 起),0=非主键列
+            rows = [(pk, name) async for _cid, name, _ctype, _notnull, _dflt, pk in cur]
+        return [name for _pk, name in sorted(r for r in rows if r[0])]
+
+    async def _fk_ref_column(self, table: str, ref_table: str,
+                             to_col: str | None, seq: int) -> str | None:
+        """外键行的被引列:显式写了用显式值,省略时按 seq 取被引表主键列。"""
+        if to_col is not None:
+            return to_col
+        pks = await self._pk_columns(ref_table)
+        return pks[seq] if seq < len(pks) else None
 
     async def table_relations(self, path: str) -> list[RelationInfo]:
         await self.connect()
@@ -117,7 +129,7 @@ class SqliteDriver(DriverBase):
 
         # 出站:本表引用别人(自引用也在这里记一次,'out')
         for fid, seq, ref_table, from_col, to_col, *_rest in await fk_rows(table):
-            ref_col = to_col if to_col is not None else await self._pk_column(ref_table)
+            ref_col = await self._fk_ref_column(table, ref_table, to_col, seq)
             if ref_col is None:
                 continue  # 被引表无主键且省略被引列,无法定位锚点列
             relations.append(RelationInfo(
@@ -128,7 +140,10 @@ class SqliteDriver(DriverBase):
         # 入站:别人引用本表(源表==本表的自引用上面已记,跳过)
         async with conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
-                " AND name NOT LIKE 'sqlite_%'") as cur:
+                " AND name NOT LIKE 'sqlite_%'"
+                # 预筛:只有建表 SQL 里出现 REFERENCES 的表才可能有入站 FK,
+                # 否则每张表都要一次 PRAGMA(千表库实测 250ms)
+                " AND sql LIKE '%REFERENCES%'") as cur:
             others = [r[0] async for r in cur]
         for src in others:
             if src == table:
@@ -136,7 +151,7 @@ class SqliteDriver(DriverBase):
             for fid, seq, ref_table, from_col, to_col, *_rest in await fk_rows(src):
                 if ref_table != table:
                     continue
-                ref_col = to_col if to_col is not None else await self._pk_column(table)
+                ref_col = await self._fk_ref_column(src, table, to_col, seq)
                 if ref_col is None:
                     continue
                 relations.append(RelationInfo(

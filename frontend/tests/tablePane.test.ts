@@ -9,9 +9,9 @@ vi.mock('@/api/http', () => ({
       return {
         columns: [
           { name: 'id', type: 'INTEGER', nullable: false, default: null,
-            pk: true, ordinal: 0, comment: '' },
+            pk: 1, ordinal: 0, comment: '' },
           { name: 'name', type: 'TEXT', nullable: true, default: null,
-            pk: false, ordinal: 1, comment: '姓名' },
+            pk: 0, ordinal: 1, comment: '姓名' },
         ],
       }
     }
@@ -132,5 +132,32 @@ describe('TablePane · 子页签', () => {
     // DDL 为空 → 占位文案
     await clickSub(w, 'DDL')
     expect(w.text()).toContain('该对象没有 DDL')
+  })
+
+  it('结构与 DDL 的加载标志独立:结构先到时结构页不等 DDL', async () => {
+    // DDL 请求永不 resolve:结构页不该一直停在"加载中…"
+    let releaseDdl: (v: { ddl: string }) => void = () => {}
+    vi.mocked(get).mockImplementation((url: string) => {
+      if (url.includes('/structure')) {
+        return Promise.resolve({ columns: [{ name: 'id', type: 'INTEGER', nullable: false,
+                                             default: null, pk: 1, ordinal: 0, comment: '' }] })
+      }
+      if (url.includes('/ddl')) {
+        return new Promise(res => { releaseDdl = res })
+      }
+      return Promise.resolve({ relations: [] })
+    })
+    const w = mountPane()
+    await flushPromises()
+    await clickSub(w, '结构')
+    expect(w.findAll('tbody tr')).toHaveLength(1)
+    expect(w.text()).not.toContain('加载中…')
+    // DDL 页仍处于加载中(各自的标志)
+    await clickSub(w, 'DDL')
+    expect(w.text()).toContain('加载中…')
+    releaseDdl({ ddl: 'CREATE TABLE t;' })
+    await flushPromises()
+    await clickSub(w, 'DDL')
+    expect(w.text()).not.toContain('加载中…')
   })
 })

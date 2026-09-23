@@ -47,9 +47,14 @@ export interface ColumnInfo {
   type: string
   nullable: boolean
   default: string | null
-  pk: boolean
+  /** 0=非主键;1..n=主键内序号(复合主键按索引列序) */
+  pk: number
   ordinal: number
   comment: string
+  /** pg:'' | 's'(存储生成列,default 为其生成表达式) */
+  generated?: string
+  /** pg:'' | 'a'(GENERATED ALWAYS) | 'd'(BY DEFAULT) */
+  identity?: string
 }
 
 /** 表详情-ER 页签:一条外键列对(对应后端 RelationInfo;direction 相对被查询表) */

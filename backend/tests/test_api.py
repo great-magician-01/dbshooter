@@ -225,11 +225,25 @@ def test_structure_endpoint(client, sqlite_conn_id):
     assert r.status_code == 200
     cols = r.json()['columns']
     assert [c['name'] for c in cols] == ['id', 'name', 'city']
-    assert cols[0]['pk'] is True and cols[0]['type'] == 'INTEGER'
+    assert cols[0]['pk'] == 1 and cols[0]['type'] == 'INTEGER'
     # 视图也有结构
     r = client.get(f'/api/connections/{sqlite_conn_id}/structure',
                    params={'path': 'main.v_users'})
     assert [c['name'] for c in r.json()['columns']] == ['name']
+
+
+def test_structure_missing_table_404(client, sqlite_conn_id):
+    """表不存在 → 404(而不是 200 + 空列,前端会把空列当成"没有列")。"""
+    r = client.get(f'/api/connections/{sqlite_conn_id}/structure',
+                   params={'path': 'main.no_such'})
+    assert r.status_code == 404
+
+
+def test_structure_relations_empty_path_400(client, sqlite_conn_id):
+    """缺 path 是调用方 bug,与"连接不存在"区分开。"""
+    for url in ('structure', 'relations'):
+        r = client.get(f'/api/connections/{sqlite_conn_id}/{url}')
+        assert r.status_code == 400, url
 
 
 def test_relations_endpoint(client, sqlite_conn_id):

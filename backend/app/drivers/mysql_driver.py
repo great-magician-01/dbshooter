@@ -127,17 +127,26 @@ class MysqlDriver(DriverBase):
         async with self.pool.acquire() as conn, conn.cursor() as cur:
             # COLUMN_TYPE 是全型(varchar(64)/int unsigned);视图列同样覆盖
             await cur.execute(
-                'SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, COLUMN_KEY,'
+                'SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT,'
                 ' ORDINAL_POSITION, COLUMN_COMMENT'
                 ' FROM information_schema.COLUMNS'
                 ' WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION',
                 (db, table))
+            rows = await cur.fetchall()
+            if not rows:
+                raise QueryError(f'表不存在: {db}.{table}')
+            # 复合主键的列序:KEY_COLUMN_USAGE 的 ORDINAL_POSITION 是约束内序号
+            await cur.execute(
+                'SELECT COLUMN_NAME, ORDINAL_POSITION'
+                ' FROM information_schema.KEY_COLUMN_USAGE'
+                " WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND CONSTRAINT_NAME='PRIMARY'"
+                ' ORDER BY ORDINAL_POSITION', (db, table))
+            pk_pos = {name: int(pos) for name, pos in await cur.fetchall()}
             return [ColumnInfo(name=name, type=ctype, nullable=nullable == 'YES',
                                default=None if dflt is None else str(dflt),
-                               pk=key == 'PRI', ordinal=int(ordinal),
+                               pk=pk_pos.get(name, 0), ordinal=int(ordinal),
                                comment=comment or '')
-                    for name, ctype, nullable, dflt, key, ordinal, comment
-                    in await cur.fetchall()]
+                    for name, ctype, nullable, dflt, ordinal, comment in rows]
 
     async def table_relations(self, path: str) -> list[RelationInfo]:
         await self.connect()

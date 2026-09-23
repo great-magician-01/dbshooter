@@ -7,6 +7,7 @@ import asyncpg
 import pytest
 
 from backend.app.drivers.pg_driver import PgDriver
+from backend.app.drivers.base import QueryError
 
 # 无结果集的语句首词(prepare 后走 conn.execute 记影响行数)
 _WRITE_HEADS = ('INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER', 'SET', 'GRANT')
@@ -77,34 +78,103 @@ class _Conn:
     async def fetchval(self, sql: str, *args: Any) -> Any:
         self.log.append(('fetchval', self.depth, sql))
         if 'relkind' in sql:
-            # v_users 罐装为视图,其余为普通表
-            return 'v' if args and args[1] == 'v_users' else 'r'
+            return _RELKIND.get((args[0], args[1])) if args else None
         if 'pg_get_viewdef' in sql:
             return 'SELECT id, name FROM public.users'
         return None
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
-        """结构/关系元数据查询的罐装返回(按 SQL 子串路由)。"""
+        """结构/关系元数据查询的罐装返回。
+
+        fake 复刻驱动 SQL 里的过滤条件(而不是无条件返罐装行):少了
+        relkind / conparentid / indisprimary 过滤时返回"脏"数据,
+        对应测试随之失败 —— 否则删掉过滤条件测试仍然是绿的。
+        """
         self.log.append(('fetch', self.depth, sql))
         if 'pg_attribute a' in sql and 'format_type' in sql:
-            return [
-                {'name': 'id', 'type': 'integer', 'nullable': False,
-                 'default': "nextval('users_id_seq'::regclass)", 'ordinal': 1,
-                 'comment': None},
-                {'name': 'name', 'type': 'character varying(64)', 'nullable': True,
-                 'default': None, 'ordinal': 2, 'comment': '姓名'},
-            ]
+            # relkind IN ('r','p','v','m','f'):序列/复合类型不该有列
+            if "relkind IN ('r','p','v','m','f')" not in sql:
+                return list(_SEQ_ATTRS)      # 模拟少了过滤:序列属性被当成表列
+            if args and (args[0], args[1]) not in _TABLE_COLUMNS:
+                return []
+            return list(_TABLE_COLUMNS.get((args[0], args[1]), []))
         if 'pg_index i' in sql:
-            return [{'attname': 'id'}]
+            # indisprimary:非主键索引不该被当成主键
+            if 'indisprimary' not in sql:
+                return list(_IDX_ONLY_PK)
+            schema, table = args[0], args[1]
+            return list(_PK_COLUMNS.get((schema, table), []))
         if 'pg_constraint con' in sql:
+            # conparentid=0:分区表 FK 被克隆到每个分区,少了过滤会重复
+            rows = list(_FK_ROWS)
+            if 'conparentid = 0' in sql:
+                rows = [r for r in rows if not r.get('is_partition_clone')]
             # 复刻 WHERE:双侧 (schema, table) 过滤 + conname/序号排序
             schema, table = args[0], args[1]
-            rows = [r for r in _FK_ROWS
+            rows = [r for r in rows
                     if (r['src_schema'], r['src_table']) == (schema, table)
                     or (r['ref_schema'], r['ref_table']) == (schema, table)]
             return sorted(rows, key=lambda r: (r['name'], r['seq']))
         return []
 
+
+def _col(name: str, type_: str, *, nullable: bool = True, default: str | None = None,
+         ordinal: int = 1, comment: str | None = None, generated: str = '',
+         identity: str = '') -> dict[str, Any]:
+    return {'name': name, 'type': type_, 'nullable': nullable, 'default': default,
+            'ordinal': ordinal, 'comment': comment, 'generated': generated,
+            'identity': identity}
+
+
+# pg_class.relkind 罐装:v=视图,m=物化视图,r=普通表,S=序列
+_RELKIND = {
+    ('public', 'v_users'): 'v',
+    ('public', 'mv_users'): 'm',
+    ('public', 'seq_t'): 'S',
+    ('public', 'orders'): 'r',
+    ('public', 'gen_t'): 'r',
+    ('public', 'pk2'): 'r',
+}
+
+# pg_attribute 罐装列(键为 (schema, table));注意 generated/identity 列
+_TABLE_COLUMNS: dict[tuple[str, str], list[dict[str, Any]]] = {
+    ('public', 'users'): [
+        _col('id', 'integer', nullable=False, ordinal=1,
+             default="nextval('users_id_seq'::regclass)"),
+        _col('name', 'character varying(64)', ordinal=2, comment='姓名'),
+    ],
+    ('public', 'orders'): [
+        _col('id', 'integer', nullable=False, ordinal=1),
+        _col('user_id', 'integer', nullable=False, ordinal=2),
+        _col('amount', 'numeric(10,2)', ordinal=3, default='0.00'),
+    ],
+    ('public', 'v_users'): [_col('name', 'character varying(64)', ordinal=1)],
+    ('public', 'mv_users'): [_col('name', 'character varying(64)', ordinal=1)],
+    # 存储生成列 + identity 列:DDL 合成必须用 GENERATED 而不是 DEFAULT
+    ('public', 'gen_t'): [
+        _col('a', 'integer', ordinal=1),
+        _col('id', 'integer', nullable=False, ordinal=2, identity='a'),
+        _col('total', 'integer', ordinal=3, default='(a * 2)', generated='s'),
+    ],
+    # 复合主键按 (b, a) 声明:PK 列序必须跟着索引走,不能按列定义顺序
+    ('public', 'pk2'): [
+        _col('a', 'integer', nullable=False, ordinal=1),
+        _col('b', 'integer', nullable=False, ordinal=2),
+    ],
+}
+
+_PK_COLUMNS: dict[tuple[str, str], list[dict[str, Any]]] = {
+    ('public', 'users'): [{'attname': 'id'}],
+    ('public', 'orders'): [{'attname': 'id'}],
+    ('public', 'gen_t'): [{'attname': 'id'}],
+    ('public', 'pk2'): [{'attname': 'b'}, {'attname': 'a'}],   # 索引列序 b, a
+}
+
+# 少了 indisprimary 过滤时"脏"返回:非主键索引的列
+_IDX_ONLY_PK = [{'attname': 'a'}]
+# 少了 relkind 过滤时"脏"返回:序列的属性
+_SEQ_ATTRS = [_col('last_value', 'bigint'), _col('log_cnt', 'bigint'),
+              _col('is_called', 'boolean')]
 
 # pg_constraint 罐装数据(seq 按 PG WITH ORDINALITY 口径 1 起)
 _FK_ROWS = [
@@ -124,6 +194,13 @@ _FK_ROWS = [
     {'name': 'fk_cross', 'src_schema': 'sales', 'src_table': 't1',
      'src_column': 'uid', 'ref_schema': 'public', 'ref_table': 'users',
      'ref_column': 'id', 'seq': 1},
+    # 父表 orders 的 FK 被克隆到两个分区:少了 conparentid=0 时 users 会各收到一份
+    {'name': 'fk_orders_user', 'src_schema': 'public', 'src_table': 'orders_p1',
+     'src_column': 'user_id', 'ref_schema': 'public', 'ref_table': 'users',
+     'ref_column': 'id', 'seq': 1, 'is_partition_clone': True},
+    {'name': 'fk_orders_user', 'src_schema': 'public', 'src_table': 'orders_p2',
+     'src_column': 'user_id', 'ref_schema': 'public', 'ref_table': 'users',
+     'ref_column': 'id', 'seq': 1, 'is_partition_clone': True},
 ]
 
 
@@ -226,10 +303,10 @@ async def test_table_columns(pg: PgDriver):
     cols = await pg.table_columns('demo.public.users')
     assert [c.name for c in cols] == ['id', 'name']
     id_col, name_col = cols
-    assert id_col.pk is True and id_col.nullable is False and id_col.ordinal == 1
+    assert id_col.pk == 1 and id_col.nullable is False and id_col.ordinal == 1
     assert id_col.default == "nextval('users_id_seq'::regclass)"
     assert name_col.type == 'character varying(64)' and name_col.comment == '姓名'
-    assert name_col.pk is False
+    assert name_col.pk == 0
     sql = next(e[2] for e in _conn(pg).log if e[0] == 'fetch')
     assert 'pg_attribute' in sql and 'col_description' in sql
 
@@ -269,7 +346,8 @@ async def test_ddl_synthesis(pg: PgDriver):
     """DDL 页签/AI 上下文:合成 CREATE TABLE 含 NOT NULL/DEFAULT/PK/FK。"""
     ddl = await pg.ddl(['demo.public.orders'])
     assert 'CREATE TABLE public.orders' in ddl
-    assert '"id" integer DEFAULT nextval' in ddl and 'NOT NULL' in ddl
+    assert '"id" integer NOT NULL' in ddl
+    assert '"amount" numeric(10,2) DEFAULT 0.00' in ddl
     assert 'PRIMARY KEY ("id")' in ddl
     assert ('CONSTRAINT "fk_orders_user" FOREIGN KEY ("user_id")'
             ' REFERENCES public.users ("id")') in ddl
@@ -281,3 +359,81 @@ async def test_ddl_view_uses_viewdef(pg: PgDriver):
     assert ddl.startswith('CREATE VIEW public.v_users AS')
     assert 'SELECT id, name FROM public.users' in ddl
     assert 'CREATE TABLE' not in ddl
+
+
+async def test_ddl_materialized_view(pg: PgDriver):
+    """物化视图走 MATERIALIZED VIEW,不能合成出假的 CREATE TABLE。"""
+    ddl = await pg.ddl(['demo.public.mv_users'])
+    assert ddl.startswith('CREATE MATERIALIZED VIEW public.mv_users AS')
+    assert 'CREATE TABLE' not in ddl
+
+
+async def test_ddl_skips_non_relation(pg: PgDriver):
+    """序列(AI 工具可传裸名)不合成 CREATE TABLE,输出为空。"""
+    assert await pg.ddl(['demo.public.seq_t']) == ''
+    assert await pg.ddl(['demo.public.no_such']) == ''
+
+
+async def test_table_columns_relkind_filter(pg: PgDriver):
+    """列查询带 relkind 过滤:序列不被当成表(否则 AI 会看到 last_value 等属性)。
+
+    fake 在没有 relkind 过滤时返回序列属性,所以这条断言同时钉住了过滤条件本身。
+    """
+    with pytest.raises(QueryError):
+        await pg.table_columns('demo.public.seq_t')
+    sql = next(e[2] for e in _conn(pg).log if e[0] == 'fetch')
+    assert "relkind IN ('r','p','v','m','f')" in sql
+
+
+async def test_table_columns_missing_raises(pg: PgDriver):
+    """表不存在 → QueryError(路由 404),而不是 200 + 空列。"""
+    with pytest.raises(QueryError):
+        await pg.table_columns('demo.public.no_such')
+
+
+async def test_table_columns_generated_and_identity(pg: PgDriver):
+    """存储生成列与 identity 列带标记(default 分别为生成表达式/None)。"""
+    cols = {c.name: c for c in await pg.table_columns('demo.public.gen_t')}
+    assert cols['total'].generated == 's' and cols['total'].default == '(a * 2)'
+    assert cols['id'].identity == 'a'
+    assert cols['a'].generated == '' and cols['a'].identity == ''
+
+
+async def test_ddl_generated_and_identity_syntax(pg: PgDriver):
+    """生成列/identity 不能用 DEFAULT(后者丢特性,前者重跑报错)。"""
+    ddl = await pg.ddl(['demo.public.gen_t'])
+    assert '"total" integer GENERATED ALWAYS AS ((a * 2)) STORED' in ddl
+    assert '"id" integer GENERATED ALWAYS AS IDENTITY' in ddl
+    assert 'DEFAULT' not in ddl
+
+
+async def test_pk_order_follows_index(pg: PgDriver):
+    """复合主键 pk 值是索引内序号;DDL 按索引列序而非列定义顺序输出。"""
+    cols = {c.name: c for c in await pg.table_columns('demo.public.pk2')}
+    assert cols['b'].pk == 1 and cols['a'].pk == 2
+    sql = next(e[2] for e in _conn(pg).log if e[0] == 'fetch' and 'pg_index' in e[2])
+    assert 'array_position' in sql
+    ddl = await pg.ddl(['demo.public.pk2'])
+    assert 'PRIMARY KEY ("b", "a")' in ddl
+
+
+async def test_pk_query_filters_non_primary(pg: PgDriver):
+    """PK 查询必须带 indisprimary:否则任何索引的列都会被标成主键。
+
+    fake 在缺少该条件时返回非主键索引的列,断言因此能真的失败。
+    """
+    cols = {c.name: c for c in await pg.table_columns('demo.public.pk2')}
+    assert all(c.pk > 0 for c in cols.values())   # pk2 只有主键,无普通索引
+
+
+async def test_relations_excludes_partition_clones(pg: PgDriver):
+    """PG 会把父表 FK 克隆到每个分区:少了 conparentid=0 会收到重复入站关系。
+
+    fake 在缺少该条件时返回带 is_partition_clone 的行,断言因此能真的失败。
+    """
+    rels = await pg.table_relations('demo.public.users')
+    # 真实入站(orders 本体 + 跨 schema 的 sales.t1);两个分区的克隆不出现
+    assert {r.name for r in rels} == {'fk_orders_user', 'fk_cross'}
+    assert all(r.table != 'orders_p1' and r.table != 'orders_p2' for r in rels)
+    sql = next(e[2] for e in _conn(pg).log if e[0] == 'fetch' and 'pg_constraint' in e[2])
+    assert 'conparentid = 0' in sql

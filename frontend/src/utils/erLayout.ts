@@ -87,7 +87,11 @@ export function layoutEr(nodes: ErNode[], edges: ErEdge[]): ErLayout {
   const byKey = new Map(boxes.map(b => [b.key, b]))
 
   // 原始锚点
-  interface RawEdge extends ErEdge { x1: number; y1: number; x2: number; y2: number }
+  interface RawEdge extends ErEdge {
+    x1: number; y1: number; x2: number; y2: number
+    /** 垂直错开不可用(两端都只有一列)时,用控制点差异区分平行边 */
+    bendExtra: number
+  }
   const raws: RawEdge[] = []
   for (const e of edges) {
     const from = byKey.get(e.fromTable)
@@ -96,13 +100,13 @@ export function layoutEr(nodes: ErNode[], edges: ErEdge[]): ErLayout {
     const y1 = colY(from, e.fromColumn)
     const y2 = colY(to, e.toColumn)
     const [x1, x2] = from === to ? [from.x + from.w, from.x + from.w] : edgeX(from, to)
-    raws.push({ ...e, x1, y1, x2, y2 })
+    raws.push({ ...e, x1, y1, x2, y2, bendExtra: 0 })
   }
 
   // 平行边(同两端 + 同锚点):垂直错开并 clamp 到节点体内;锚点不同的天然分开,不动
   const groups = new Map<string, RawEdge[]>()
   for (const r of raws) {
-    const gk = `${r.fromTable}${r.toTable}${r.y1}${r.y2}`
+    const gk = `${r.fromTable}|${r.toTable}|${r.y1}|${r.y2}`
     const list = groups.get(gk)
     if (list) list.push(r)
     else groups.set(gk, [r])
@@ -111,32 +115,59 @@ export function layoutEr(nodes: ErNode[], edges: ErEdge[]): ErLayout {
     Math.min(Math.max(y, node.y + HEADER_H + ROW_H / 2), node.y + node.h - ROW_H / 2)
   for (const list of groups.values()) {
     if (list.length < 2) continue
+    const from = byKey.get(list[0].fromTable)!
+    const to = byKey.get(list[0].toTable)!
+    // 两端可用的垂直偏移量(列行中心到卡片边缘);单列节点时为 0
+    const span = Math.min(PARALLEL_SPREAD,
+                         (from.h - HEADER_H - ROW_H) / 2, (to.h - HEADER_H - ROW_H) / 2)
     list.forEach((r, i) => {
-      const off = (i - (list.length - 1) / 2) * PARALLEL_SPREAD
-      const from = byKey.get(r.fromTable)!
-      const to = byKey.get(r.toTable)!
+      const off = (i - (list.length - 1) / 2) * span
       r.y1 = clampBody(from, r.y1 + off)
       r.y2 = clampBody(to, r.y2 + off)
+      if (span <= 0) r.bendExtra = i * 16   // 退化节点:靠控制点差异区分路径
     })
   }
 
-  const paths: ErEdgePath[] = raws.map(r => {
+  const paths: ErEdgePath[] = []
+  // 自引用回环探出的最右缘(画布宽度要算上,否则标签被 SVG 视口裁掉)
+  let selfLoopRight = 0
+  raws.forEach(r => {
     if (r.fromTable === r.toTable) {
-      // 自引用:右侧回环折线(出 → 探出 → 竖直 → 回来)
       const x = r.x1 + SELF_LOOP_OUT
-      return { name: r.name, d: `M ${r.x1} ${r.y1} H ${x} V ${r.y2} H ${r.x1}`,
-               lx: x + 4, ly: (r.y1 + r.y2) / 2 - 4 }
+      selfLoopRight = Math.max(selfLoopRight, x + 4 + Math.max(24, r.name.length * 3))
+      paths.push({ name: r.name, d: `M ${r.x1} ${r.y1} H ${x} V ${r.y2} H ${r.x1}`,
+                   lx: x + 4, ly: (r.y1 + r.y2) / 2 - 4 })
+      return
     }
-    const bend = Math.max(24, Math.abs(r.x2 - r.x1) * 0.5)
-    return { name: r.name,
-             d: `M ${r.x1} ${r.y1} C ${r.x1 + bend} ${r.y1}, ${r.x2 - bend} ${r.y2}, ${r.x2} ${r.y2}`,
-             lx: (r.x1 + r.x2) / 2, ly: (r.y1 + r.y2) / 2 - 4 }
+    // 控制点按几何左右方向取符号:互引(A↔B)会出现反向边,固定 x1+b/x2-b
+    // 会让控制点甩向远离目标的一侧,曲线成反 S 形
+    const dir = r.x2 >= r.x1 ? 1 : -1
+    const bend = Math.max(24, Math.abs(r.x2 - r.x1) * 0.5) + r.bendExtra
+    paths.push({ name: r.name,
+                 d: `M ${r.x1} ${r.y1} C ${r.x1 + bend * dir} ${r.y1},`
+                    + ` ${r.x2 - bend * dir} ${r.y2}, ${r.x2} ${r.y2}`,
+                 lx: (r.x1 + r.x2) / 2, ly: (r.y1 + r.y2) / 2 - 4 })
   })
+
+  // 互引等场景下多条边的标签锚点会重合(两端锚点互换,中点天然相同),
+  // 同组内逐条下移,避免约束名叠印读不出来
+  const labelGroups = new Map<string, ErEdgePath[]>()
+  for (const p of paths) {
+    const gk = `${Math.round(p.lx)},${Math.round(p.ly)}`
+    const list = labelGroups.get(gk)
+    if (list) list.push(p)
+    else labelGroups.set(gk, [p])
+  }
+  for (const list of labelGroups.values()) {
+    if (list.length < 2) continue
+    list.forEach((p, i) => { p.ly += i * 11 })
+  }
 
   return {
     nodes: boxes,
     edges: paths,
-    width: (right.length ? rightX + NODE_W : centerX + NODE_W) + PAD,
+    width: Math.max(right.length ? rightX + NODE_W : centerX + NODE_W,
+                    selfLoopRight) + PAD,
     height: bottom + PAD,
   }
 }
@@ -170,10 +201,12 @@ export function buildGraph(
   const first = relations[0]
   const centerSchema = first ? (first.direction === 'out' ? first.schema : first.ref_schema) : ''
 
-  // 复合 FK 塌缩:同约束多行取 seq 最小的列对
+  // 复合 FK 塌缩:同约束多行取 seq 最小的列对。
+  // 键必须带两侧 schema:pg 多租户/跨库场景下不同库的同名表可以有同名约束,
+  // 只按表名塌缩会让其中一张邻居整表消失(且不计入 overflow 提示)
   const collapsed = new Map<string, TableRelation>()
   for (const r of relations) {
-    const gk = `${r.direction}|${r.name}|${r.table}|${r.ref_table}`
+    const gk = `${r.direction}|${r.schema}.${r.name}|${r.table}|${r.ref_schema}.${r.ref_table}`
     const prev = collapsed.get(gk)
     if (!prev || r.seq < prev.seq) collapsed.set(gk, r)
   }

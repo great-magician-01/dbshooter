@@ -107,6 +107,11 @@ async def structure(cid: str, path: str = ''):
     """表详情-结构页签:列元数据(名称/类型/可空/默认值/主键/注释)。"""
     try:
         driver = await manager.get(cid)
+    except QueryError as e:
+        raise HTTPException(404, str(e))
+    if not path:
+        raise HTTPException(400, '缺少 path(表路径)')
+    try:
         cols = await driver.table_columns(path)
         return {'columns': [c.__dict__ for c in cols]}
     except QueryError as e:
@@ -120,6 +125,11 @@ async def relations(cid: str, path: str = ''):
     """表详情-ER 页签:表的双向外键关系(我引用的 + 引用我的)。"""
     try:
         driver = await manager.get(cid)
+    except QueryError as e:
+        raise HTTPException(404, str(e))
+    if not path:
+        raise HTTPException(400, '缺少 path(表路径)')
+    try:
         rels = await driver.table_relations(path)
         return {'relations': [r.__dict__ for r in rels]}
     except QueryError as e:

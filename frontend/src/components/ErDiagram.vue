@@ -64,7 +64,7 @@ async function fetchColumns(path: string, key: string): Promise<ErCol[]> {
   if (hit) return hit
   const cid = props.tab.connection_id
   const r = await get<{ columns: ColumnInfo[] }>(`/api/connections/${cid}/structure`, { path })
-  const cols = r.columns.map(c => ({ name: c.name, pk: c.pk }))
+  const cols = r.columns.map(c => ({ name: c.name, pk: c.pk > 0 }))
   structCache.set(key, cols)
   return cols
 }
@@ -146,7 +146,7 @@ onMounted(load)
     <div class="result-body">
       <div v-if="error" class="result-placeholder" style="color:var(--red)">{{ error }}</div>
       <div v-else-if="loading" class="result-placeholder">加载中…</div>
-      <div v-else-if="!layout || layout.edges.length === 0 && layout.nodes.length <= 1"
+      <div v-else-if="!layout || layout.edges.length === 0"
            class="result-placeholder">
         {{ isView ? '视图没有外键关系' : '该表没有外键关系' }}
       </div>

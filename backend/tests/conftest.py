@@ -42,6 +42,11 @@ def sqlite_db(tmp_path) -> str:
         CREATE TABLE parents(a INTEGER, b INTEGER, PRIMARY KEY(a, b));
         CREATE TABLE children(x INTEGER, y INTEGER,
                               FOREIGN KEY(x, y) REFERENCES parents(a, b));
+        -- 复合主键被隐式引用(省略被引列):foreign_key_list 每行 to 为 NULL
+        CREATE TABLE c2(x INTEGER, y INTEGER, FOREIGN KEY(x, y) REFERENCES parents);
+        -- 引用无主键表的外键(无法定位锚点列,应被跳过而不是报错)
+        CREATE TABLE nopk(a INTEGER, b INTEGER);
+        CREATE TABLE ref_nopk(id INTEGER PRIMARY KEY, v INTEGER REFERENCES nopk);
     """)
     c.commit()
     c.close()
